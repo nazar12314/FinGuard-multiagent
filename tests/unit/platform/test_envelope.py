@@ -64,6 +64,18 @@ def test_follow_up_keeps_correlation_and_points_at_its_cause() -> None:
     assert child.version == 2
 
 
+def test_follow_up_can_rescope_a_chain_to_the_case_it_opens() -> None:
+    transaction = Envelope.new("tx.raw.received", {"transaction_id": "t-1"})
+    alert = transaction.follow_up("alerts.alert.created", {"alert_id": "a-1"})
+    case_id = new_id()
+
+    case_opened = alert.follow_up("cases.case.opened", {}, correlation_id=case_id)
+
+    assert alert.correlation_id == transaction.id
+    assert case_opened.correlation_id == case_id
+    assert case_opened.causation_id == alert.id
+
+
 def test_occurred_at_is_normalised_to_utc() -> None:
     kyiv_noon = datetime(2026, 11, 24, 12, 0, tzinfo=timezone(timedelta(hours=2)))
 

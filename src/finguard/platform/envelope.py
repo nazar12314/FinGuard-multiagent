@@ -50,15 +50,24 @@ class Envelope(BaseModel):
             id=message_id,
             type=type,
             version=version,
-            correlation_id=correlation_id or message_id,
+            correlation_id=message_id if correlation_id is None else correlation_id,
             data=data,
         )
 
-    def follow_up(self, type: str, data: dict[str, JsonValue], *, version: int = 1) -> Self:
+    def follow_up(
+        self,
+        type: str,
+        data: dict[str, JsonValue],
+        *,
+        correlation_id: UUID | None = None,
+        version: int = 1,
+    ) -> Self:
+        # Pass correlation_id to re-scope the chain, e.g. to the case id once an alert
+        # opens a case; the causation link back to the alert is kept either way.
         return self.__class__(
             type=type,
             version=version,
-            correlation_id=self.correlation_id,
+            correlation_id=self.correlation_id if correlation_id is None else correlation_id,
             causation_id=self.id,
             data=data,
         )
