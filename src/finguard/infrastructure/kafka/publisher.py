@@ -1,8 +1,25 @@
-import asyncio
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 from aiokafka import AIOKafkaProducer
+from aiokafka.errors import (
+    InvalidTopicError,
+    MessageSizeTooLargeError,
+    RecordTooLargeError,
+    TopicAuthorizationFailedError,
+)
+
+# Errors caused by the message itself, which no retry or fresh producer can fix. Other
+# non-retriable errors (a timeout, a broken producer sequence) are not the message's fault.
+_REJECTIONS = (
+    InvalidTopicError,
+    MessageSizeTooLargeError,
+    RecordTooLargeError,
+    TopicAuthorizationFailedError,
+)
+
+
+class MessageRejected(Exception):
+    """Kafka refused this message for good."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,16 +43,14 @@ class KafkaPublisher:
     def __init__(self, producer: AIOKafkaProducer) -> None:
         self._producer = producer
 
-    async def publish(self, messages: Sequence[OutgoingMessage]) -> None:
-        """Return once every message is acknowledged; raise if any of them failed."""
-        # Queue the whole batch before waiting, so the sends are pipelined.
-        deliveries = [
-            await self._producer.send(
+    async def publish(self, message: OutgoingMessage) -> None:
+        """Return once Kafka acknowledged the message. Raise MessageRejected if it never will."""
+        try:
+            await self._producer.send_and_wait(
                 message.topic,
                 message.value,
                 key=message.key.encode(),
                 headers=list(message.headers),
             )
-            for message in messages
-        ]
-        await asyncio.gather(*deliveries)
+        except _REJECTIONS as error:
+            raise MessageRejected(f"{type(error).__name__}: {error}") from error

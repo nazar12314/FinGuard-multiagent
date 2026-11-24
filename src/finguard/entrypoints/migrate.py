@@ -4,6 +4,10 @@ from alembic.config import CommandLine, Config
 
 from finguard.core.logging import configure_logging
 from finguard.core.settings import load_settings_or_exit
+from finguard.infrastructure.db.metadata import metadata
+
+# Import every module that defines tables, so autogenerate and `alembic check` see them all.
+from finguard.infrastructure.outbox import tables as _outbox_tables  # noqa: F401
 
 MIGRATIONS = "finguard.infrastructure.db:migrations"
 
@@ -11,7 +15,11 @@ MIGRATIONS = "finguard.infrastructure.db:migrations"
 def alembic_config(database_url: str) -> Config:
     config = Config()
     config.set_main_option("script_location", MIGRATIONS)
+    # Passed as attributes rather than ini options, which would treat a "%" in a
+    # URL-encoded password as interpolation. Migrations live in infrastructure, which may
+    # not import the modules that own tables, so the metadata comes from here too.
     config.attributes["database_url"] = database_url
+    config.attributes["target_metadata"] = metadata
     return config
 
 

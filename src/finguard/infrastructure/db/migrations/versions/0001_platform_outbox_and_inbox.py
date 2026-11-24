@@ -22,6 +22,7 @@ def upgrade() -> None:
     op.create_table(
         "outbox",
         sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("position", sa.BigInteger(), sa.Identity(always=True), nullable=False),
         sa.Column("destination", sa.Text(), nullable=False),
         sa.Column("key", sa.Text(), nullable=False),
         sa.Column("payload", postgresql.JSONB(), nullable=False),
@@ -32,15 +33,17 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("failed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("last_error", sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint("id", name="pk_outbox"),
         schema="platform",
     )
     op.create_index(
-        "ix_outbox_unpublished",
+        "ix_outbox_pending",
         "outbox",
-        ["created_at", "id"],
+        ["position"],
         schema="platform",
-        postgresql_where=sa.text("published_at IS NULL"),
+        postgresql_where=sa.text("published_at IS NULL AND failed_at IS NULL"),
     )
     op.create_index(
         "ix_outbox_published_at",
@@ -67,6 +70,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("inbox", schema="platform")
     op.drop_index("ix_outbox_published_at", table_name="outbox", schema="platform")
-    op.drop_index("ix_outbox_unpublished", table_name="outbox", schema="platform")
+    op.drop_index("ix_outbox_pending", table_name="outbox", schema="platform")
     op.drop_table("outbox", schema="platform")
     op.execute(sa.schema.DropSchema("platform"))

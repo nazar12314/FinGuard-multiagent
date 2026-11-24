@@ -1,4 +1,5 @@
-from contextlib import AsyncExitStack
+import asyncio
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 
 from finguard.core.auth import Authenticator, DevHeaderAuthenticator
@@ -29,16 +30,26 @@ async def build_api_container(settings: Settings, resources: AsyncExitStack) -> 
 
 async def build_outbox_relay(settings: Settings, resources: AsyncExitStack) -> OutboxRelay:
     engine = create_database_engine(
-        settings.database.url.get_secret_value(), pool_size=settings.database.pool_size
+        settings.database.url.get_secret_value(),
+        pool_size=settings.database.pool_size,
+        idle_in_transaction_timeout_s=settings.database.idle_in_transaction_timeout_s,
     )
     resources.push_async_callback(engine.dispose)
 
+    relay_settings = settings.outbox_relay
     producer = create_kafka_producer(settings.kafka.bootstrap_servers)
-    resources.push_async_callback(producer.stop)  # flushes queued messages on shutdown
+
+    async def stop_producer() -> None:
+        # Stopping flushes queued messages, which never finishes while Kafka is unreachable.
+        with suppress(TimeoutError):
+            await asyncio.wait_for(producer.stop(), timeout=relay_settings.publish_timeout_s)
+
+    resources.push_async_callback(stop_producer)
     await producer.start()
 
     return OutboxRelay(
         create_session_factory(engine),
         KafkaPublisher(producer),
-        batch_size=settings.outbox_relay.batch_size,
+        batch_size=relay_settings.batch_size,
+        publish_timeout_s=relay_settings.publish_timeout_s,
     )

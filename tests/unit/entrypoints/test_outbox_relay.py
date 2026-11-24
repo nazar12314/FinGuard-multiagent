@@ -2,9 +2,13 @@ import asyncio
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
+from uuid import uuid4
+
+import pytest
 
 from finguard.core.settings import OutboxRelaySettings
-from finguard.entrypoints.outbox_relay import relay_until_stopped
+from finguard.entrypoints.outbox_relay import RelayMustRestart, relay_until_stopped, retry_delay
+from finguard.infrastructure.outbox.relay import MessageParked
 
 LogLines = Callable[[], list[dict[str, Any]]]
 
@@ -42,6 +46,10 @@ async def run(relay: ScriptedRelay, stop: asyncio.Event, **settings: Any) -> Non
     )
 
 
+def events(log_lines: LogLines) -> list[str]:
+    return [line["event"] for line in log_lines()]
+
+
 async def test_full_batches_are_published_back_to_back() -> None:
     stop = asyncio.Event()
     relay = ScriptedRelay([2, 2], stop)
@@ -52,15 +60,62 @@ async def test_full_batches_are_published_back_to_back() -> None:
     assert relay.publish_calls == 3
 
 
+async def test_stopping_interrupts_the_wait_between_polls() -> None:
+    stop = asyncio.Event()
+    relay = ScriptedRelay([1, 1], stop)
+    asyncio.get_running_loop().call_later(0.05, stop.set)
+
+    await run(relay, stop, poll_interval_s=60)
+
+    assert relay.publish_calls == 1
+
+
 async def test_a_failed_publish_is_logged_and_retried(log_lines: LogLines) -> None:
     stop = asyncio.Event()
     relay = ScriptedRelay([ConnectionError("kafka unavailable"), 1], stop)
 
     await run(relay, stop, poll_interval_s=0.01)
 
-    events = [line["event"] for line in log_lines()]
-    assert "outbox.publish_failed" in events
-    assert "outbox.batch_published" in events
+    assert "outbox.publish_failed" in events(log_lines)
+    assert "outbox.batch_published" in events(log_lines)
+
+
+async def test_the_relay_gives_up_after_repeated_failures(log_lines: LogLines) -> None:
+    stop = asyncio.Event()
+    failures: list[int | Exception] = [ConnectionError("kafka unavailable")] * 3
+    relay = ScriptedRelay(failures, stop)
+
+    with pytest.raises(RelayMustRestart):
+        await run(relay, stop, poll_interval_s=0.01, max_consecutive_failures=3)
+
+    assert relay.publish_calls == 3
+    assert "outbox.relay_gave_up" in events(log_lines)
+
+
+@pytest.mark.parametrize(
+    ("error", "event"),
+    [
+        (MessageParked(uuid4(), "cases.events", "too large"), "outbox.message_parked"),
+        (TimeoutError(), "outbox.publish_timed_out"),
+    ],
+)
+async def test_a_parked_message_or_a_stuck_producer_restarts_the_relay(
+    log_lines: LogLines, error: Exception, event: str
+) -> None:
+    stop = asyncio.Event()
+    relay = ScriptedRelay([error, 1], stop)
+
+    with pytest.raises(RelayMustRestart):
+        await run(relay, stop)
+
+    assert relay.publish_calls == 1
+    assert event in events(log_lines)
+
+
+def test_retries_back_off_exponentially_up_to_a_cap() -> None:
+    settings = OutboxRelaySettings(poll_interval_s=1, max_retry_delay_s=10)
+
+    assert [retry_delay(failures, settings) for failures in range(1, 7)] == [1, 2, 4, 8, 10, 10]
 
 
 async def test_old_published_messages_are_pruned_at_startup() -> None:
@@ -80,7 +135,7 @@ async def test_a_failed_prune_does_not_stop_publishing(log_lines: LogLines) -> N
     await run(relay, stop, poll_interval_s=0.01)
 
     assert relay.publish_calls == 2
-    assert "outbox.prune_failed" in [line["event"] for line in log_lines()]
+    assert "outbox.prune_failed" in events(log_lines)
 
 
 async def test_the_loop_returns_once_stopped() -> None:

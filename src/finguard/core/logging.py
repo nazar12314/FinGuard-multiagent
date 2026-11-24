@@ -20,6 +20,9 @@ class LogEvent(StrEnum):
     HTTP_SERVER_ERROR = "http.server_error"
     OUTBOX_BATCH_PUBLISHED = "outbox.batch_published"
     OUTBOX_PUBLISH_FAILED = "outbox.publish_failed"
+    OUTBOX_PUBLISH_TIMED_OUT = "outbox.publish_timed_out"
+    OUTBOX_MESSAGE_PARKED = "outbox.message_parked"
+    OUTBOX_RELAY_GAVE_UP = "outbox.relay_gave_up"
     OUTBOX_PRUNED = "outbox.pruned"
     OUTBOX_PRUNE_FAILED = "outbox.prune_failed"
 
