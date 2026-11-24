@@ -14,6 +14,7 @@ uv run pytest tests/unit                          # fast, no Docker
 uv run pytest tests/integration                   # Postgres and Kafka in testcontainers (needs Docker)
 FINGUARD_ENV=dev uv run finguard-api              # API on :8000, docs at /docs
 FINGUARD_ENV=dev uv run finguard-migrate upgrade head
+FINGUARD_ENV=dev uv run finguard-topics           # creates Kafka topics with their retry and DLQ topics
 FINGUARD_ENV=dev uv run finguard-outbox-relay     # publishes outbox rows to Kafka
 ```
 

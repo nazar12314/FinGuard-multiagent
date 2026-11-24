@@ -26,7 +26,9 @@ def test_prod_refuses_to_start_with_the_dev_auth_stub() -> None:
         Settings(env="prod")
 
 
-@pytest.mark.parametrize("variable", ["database.url", "kafka.bootstrap_servers"])
+@pytest.mark.parametrize(
+    "variable", ["database.url", "kafka.bootstrap_servers", "kafka.replication_factor"]
+)
 def test_prod_refuses_to_fall_back_to_the_local_stack(variable: str) -> None:
     with pytest.raises(ValidationError, match=f"{variable} must be set explicitly"):
         Settings(env="prod")
@@ -35,6 +37,7 @@ def test_prod_refuses_to_fall_back_to_the_local_stack(variable: str) -> None:
 def test_prod_accepts_explicit_connection_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FINGUARD_DATABASE__URL", "postgresql+asyncpg://app:pw@db/finguard")
     monkeypatch.setenv("FINGUARD_KAFKA__BOOTSTRAP_SERVERS", "kafka:9092")
+    monkeypatch.setenv("FINGUARD_KAFKA__REPLICATION_FACTOR", "3")
 
     with pytest.raises(ValidationError) as error:
         Settings(env="prod")
@@ -59,3 +62,9 @@ def test_the_database_url_never_appears_in_reprs(monkeypatch: pytest.MonkeyPatch
 
     assert settings.database.url.get_secret_value().endswith("@db/finguard")
     assert "s3cret" not in repr(settings)
+
+
+def test_retry_delays_are_read_as_a_json_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINGUARD_KAFKA__RETRY_DELAYS_S", "[10, 60, 600]")
+
+    assert Settings(env="test").kafka.retry_delays_s == (10.0, 60.0, 600.0)

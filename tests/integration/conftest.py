@@ -1,9 +1,13 @@
 import asyncio
 import socket
-from collections.abc import AsyncIterator, Iterator
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from typing import Any
 from uuid import uuid4
 
 import pytest
+from aiokafka import AIOKafkaConsumer, TopicPartition
+from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from alembic import command
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -88,7 +92,74 @@ def kafka_bootstrap_servers() -> Iterator[str]:
         .with_env("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1")
         .with_env("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1")
         .with_env("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
+        .with_env("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")  # as in deploy/compose
         .waiting_for(LogMessageWaitStrategy("Kafka Server started").with_startup_timeout(120))
     )
     with container:
         yield f"localhost:{port}"
+
+
+CreateTopics = Callable[..., Awaitable[None]]
+ReadTopic = Callable[..., Awaitable[list[Any]]]
+
+
+@pytest.fixture
+def create_topics(kafka_bootstrap_servers: str) -> CreateTopics:
+    async def create(*topics: NewTopic) -> None:
+        admin = AIOKafkaAdminClient(bootstrap_servers=kafka_bootstrap_servers)
+        await admin.start()
+        try:
+            await admin.create_topics(list(topics))
+        finally:
+            await admin.close()
+
+    return create
+
+
+@pytest.fixture
+def read_topic(kafka_bootstrap_servers: str) -> ReadTopic:
+    async def read(topic: str, count: int, *, timeout_s: float = 10) -> list[Any]:
+        """Read up to `count` records from the start of `topic`, waiting at most `timeout_s`."""
+        consumer = AIOKafkaConsumer(
+            topic, bootstrap_servers=kafka_bootstrap_servers, auto_offset_reset="earliest"
+        )
+        await consumer.start()
+        try:
+            records: list[Any] = []
+            deadline = time.monotonic() + timeout_s
+            while len(records) < count and time.monotonic() < deadline:
+                batches = await consumer.getmany(timeout_ms=500)
+                records.extend(record for batch in batches.values() for record in batch)
+            return records
+        finally:
+            await consumer.stop()
+
+    return read
+
+
+TopicSize = Callable[[str], Awaitable[int]]
+
+
+@pytest.fixture
+def topic_size(kafka_bootstrap_servers: str) -> TopicSize:
+    async def size(topic: str) -> int:
+        """How many records the topic holds, read from its end offsets, without waiting."""
+        admin = AIOKafkaAdminClient(bootstrap_servers=kafka_bootstrap_servers)
+        await admin.start()
+        try:
+            [description] = await admin.describe_topics([topic])
+        finally:
+            await admin.close()
+        partitions = [
+            TopicPartition(topic, partition["partition"]) for partition in description["partitions"]
+        ]
+        assert partitions, f"topic {topic} does not exist"  # an empty sum would read as 0
+        consumer = AIOKafkaConsumer(bootstrap_servers=kafka_bootstrap_servers)
+        await consumer.start()
+        try:
+            offsets: dict[TopicPartition, int] = await consumer.end_offsets(partitions)
+            return sum(offsets.values())
+        finally:
+            await consumer.stop()
+
+    return size

@@ -18,6 +18,8 @@ class LogEvent(StrEnum):
     HTTP_REQUEST_COMPLETED = "http.request.completed"
     HTTP_UNHANDLED_ERROR = "http.unhandled_error"
     HTTP_SERVER_ERROR = "http.server_error"
+    KAFKA_TOPICS_ENSURED = "kafka.topics_ensured"
+    KAFKA_TOPIC_PARTITIONS_DIFFER = "kafka.topic_partitions_differ"
     OUTBOX_BATCH_PUBLISHED = "outbox.batch_published"
     OUTBOX_PUBLISH_FAILED = "outbox.publish_failed"
     OUTBOX_PUBLISH_TIMED_OUT = "outbox.publish_timed_out"

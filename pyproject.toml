@@ -21,6 +21,7 @@ dependencies = [
 finguard-api = "finguard.entrypoints.api:main"
 finguard-migrate = "finguard.entrypoints.migrate:main"
 finguard-outbox-relay = "finguard.entrypoints.outbox_relay:main"
+finguard-topics = "finguard.entrypoints.topics:main"
 
 [dependency-groups]
 dev = [
