@@ -17,10 +17,13 @@ class LogEvent(StrEnum):
     APP_STOPPED = "app.stopped"
     HTTP_REQUEST_COMPLETED = "http.request.completed"
     HTTP_UNHANDLED_ERROR = "http.unhandled_error"
+    HTTP_SERVER_ERROR = "http.server_error"
 
 
+# Matches whole trailing name segments, so access_token is masked but token_count is not.
 _SENSITIVE_KEY = re.compile(
-    r"pass(word)?|secret|token|authorization|cookie|api[_-]?key|dsn|credential",
+    r"(^|[_-])(password|passwd|secret([_-]?key)?|token|authorization|cookie"
+    r"|api[_-]?key|private[_-]?key|dsn|credentials?)$",
     re.IGNORECASE,
 )
 _URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
@@ -33,7 +36,7 @@ def redact(value: Any, key: str | None = None) -> Any:
     if isinstance(value, Mapping):
         return {k: redact(v, str(k)) for k, v in value.items()}
     if isinstance(value, list | tuple):
-        return type(value)(redact(v) for v in value)
+        return [redact(v) for v in value]
     if isinstance(value, str):
         return _URL_CREDENTIALS.sub(rf"\g<scheme>{_MASK}@", value)
     return value
@@ -42,7 +45,9 @@ def redact(value: Any, key: str | None = None) -> Any:
 def _redact_secrets(
     _: Any, __: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
-    return {k: v if k == "event" else redact(v, k) for k, v in event_dict.items()}
+    # "event" is never masked by name, but stdlib messages carry formatted arguments,
+    # so its text is still scrubbed.
+    return {k: redact(v) if k == "event" else redact(v, k) for k, v in event_dict.items()}
 
 
 def configure_logging(settings: Settings, stream: TextIO | None = None) -> None:

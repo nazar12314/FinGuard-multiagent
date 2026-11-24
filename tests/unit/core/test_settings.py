@@ -14,6 +14,13 @@ def test_nested_settings_are_read_from_prefixed_env_vars(monkeypatch: pytest.Mon
     assert settings.api.port == 9100
 
 
+def test_the_environment_must_be_set_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FINGUARD_ENV", raising=False)
+
+    with pytest.raises(ValidationError, match="env"):
+        Settings()
+
+
 def test_prod_refuses_to_start_with_the_dev_auth_stub() -> None:
     with pytest.raises(ValidationError, match="dev_header"):
         Settings(env="prod")

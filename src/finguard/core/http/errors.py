@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from finguard.core.auth import Unauthenticated
+from finguard.core.logging import LogEvent, get_logger
 from finguard.platform.errors import (
     ApplicationError,
     Conflict,
@@ -33,6 +34,8 @@ _CODE_BY_HTTP_STATUS = {
     405: "method_not_allowed",
     413: "payload_too_large",
 }
+
+logger = get_logger(__name__)
 
 
 def error_response(
@@ -62,7 +65,13 @@ def _request_id(request: Request) -> str | None:
 
 async def _application_error(request: Request, exc: Exception) -> JSONResponse:
     error = cast(ApplicationError, exc)
-    return error_response(status_for(error), error.code, error.message, _request_id(request))
+    status_code = status_for(error)
+    if status_code == 500:
+        # An error with no mapped status is a programming mistake: keep the traceback.
+        logger.error(LogEvent.HTTP_SERVER_ERROR, code=error.code, exc_info=error)
+    elif status_code >= 500:
+        logger.warning(LogEvent.HTTP_SERVER_ERROR, code=error.code, message=error.message)
+    return error_response(status_code, error.code, error.message, _request_id(request))
 
 
 async def _request_validation_error(request: Request, exc: Exception) -> JSONResponse:
