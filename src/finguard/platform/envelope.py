@@ -11,9 +11,14 @@ TRACEPARENT_PATTERN = r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
 
 
 class Envelope(BaseModel):
-    """Wrapper for every Kafka message. Consumers deduplicate on `id`."""
+    """Wrapper for every Kafka message.
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    Consumers deduplicate on `id`. Envelopes are keyed on it and never hashed, because
+    `data` is a plain dict. Unknown top-level fields are ignored, so the envelope can gain
+    fields without breaking consumers that haven't been upgraded yet.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     id: UUID = Field(default_factory=new_id)
     type: str = Field(pattern=MESSAGE_TYPE_PATTERN)

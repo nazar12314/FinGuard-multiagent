@@ -83,22 +83,22 @@ def test_occurred_at_is_normalised_to_utc() -> None:
         {"type": "cases."},
         {"version": 0},
         {"traceparent": "not-a-traceparent"},
-        {"unexpected_field": 1},
     ],
-    ids=[
-        "naive-datetime",
-        "undotted-type",
-        "empty-segment",
-        "zero-version",
-        "bad-traceparent",
-        "extra-field",
-    ],
+    ids=["naive-datetime", "undotted-type", "empty-segment", "zero-version", "bad-traceparent"],
 )
 def test_rejects_invalid_envelopes(override: dict[str, Any]) -> None:
     fields: dict[str, Any] = {"type": "cases.case.opened", "correlation_id": new_id(), "data": {}}
 
     with pytest.raises(ValidationError):
         Envelope(**(fields | override))
+
+
+def test_unknown_top_level_fields_from_newer_producers_are_ignored() -> None:
+    wire = Envelope.new("cases.case.opened", {}).model_dump(mode="json")
+
+    envelope = Envelope.model_validate(wire | {"producer": "cases"})
+
+    assert "producer" not in envelope.model_dump()
 
 
 def test_envelope_is_immutable() -> None:
