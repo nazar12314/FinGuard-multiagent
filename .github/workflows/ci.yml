@@ -30,6 +30,8 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run lint-imports
+      - name: Validate the local docker-compose stack
+        run: docker compose -f deploy/compose/compose.yaml --profile observability config --quiet
 
   test:
     runs-on: ubuntu-latest # Docker is available here for testcontainers
