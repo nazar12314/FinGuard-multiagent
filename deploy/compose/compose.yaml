@@ -1,0 +1,283 @@
+name: finguard
+
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: postgresql://finguard:finguard@postgres:5432/langfuse
+  NEXTAUTH_URL: http://localhost:3000
+  SALT: finguard-dev-salt
+  ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+  TELEMETRY_ENABLED: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: clickhouse
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: finguard
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: finguard
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: finguard-dev-secret
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://rustfs:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: finguard
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: finguard-dev-secret
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://rustfs:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+x-langfuse-depends-on: &langfuse-depends-on
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  rustfs-init:
+    condition: service_completed_successfully
+  clickhouse:
+    condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    environment:
+      POSTGRES_USER: finguard
+      POSTGRES_PASSWORD: finguard
+      POSTGRES_DB: finguard
+    ports:
+      - 127.0.0.1:5432:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finguard -d finguard"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:4.3.2
+    environment:
+      CLUSTER_ID: LRHe_6yDSNul3c_lUHB5bA
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Containers use INTERNAL (kafka:19092); processes on the host use EXTERNAL (localhost:9092).
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - 127.0.0.1:9092:9092
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:19092 > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+
+  apicurio:
+    image: apicurio/apicurio-registry:3.3.5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APICURIO_STORAGE_KIND: sql
+      APICURIO_STORAGE_SQL_KIND: postgresql
+      APICURIO_DATASOURCE_URL: jdbc:postgresql://postgres:5432/apicurio
+      APICURIO_DATASOURCE_USERNAME: finguard
+      APICURIO_DATASOURCE_PASSWORD: finguard
+    ports:
+      - 127.0.0.1:8080:8080
+    healthcheck:
+      # Health endpoints live on the management port, which stays inside the container.
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  redis:
+    image: redis:8.10.3
+    # Langfuse queues jobs in Redis, and queued jobs must never be evicted.
+    command: ["redis-server", "--requirepass", "finguard", "--maxmemory-policy", "noeviction"]
+    environment:
+      REDISCLI_AUTH: finguard
+    ports:
+      - 127.0.0.1:6379:6379
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rustfs:
+    image: rustfs/rustfs:1.0.6
+    environment:
+      RUSTFS_ACCESS_KEY: finguard
+      RUSTFS_SECRET_KEY: finguard-dev-secret
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - 127.0.0.1:9000:9000
+      - 127.0.0.1:9001:9001
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Creates Langfuse's bucket; the image's built-in bucket bootstrap fails in 1.0.6.
+  rustfs-init:
+    image: rustfs/rustfs:1.0.6
+    profiles: [observability]
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["rc", "bucket", "create", "local/langfuse", "--ignore-existing"]
+    environment:
+      RC_HOST_local: http://finguard:finguard-dev-secret@rustfs:9000
+    restart: "no"
+
+  neo4j:
+    image: neo4j:2026.10.2-community
+    environment:
+      NEO4J_AUTH: neo4j/finguard-dev
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    ports:
+      - 127.0.0.1:7474:7474
+      - 127.0.0.1:7687:7687
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:7474"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    profiles: [observability]
+    command: ["--config=/etc/otelcol/config.yaml"]
+    depends_on:
+      langfuse-web:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:4317:4317
+      - 127.0.0.1:4318:4318
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    profiles: [observability]
+    ports:
+      - 127.0.0.1:9090:9090
+    volumes:
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  grafana:
+    image: grafana/grafana:13.3.1
+    profiles: [observability]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - 127.0.0.1:3001:3000
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3.71.3
+    profiles: [observability]
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.83.0
+    profiles: [observability]
+    depends_on: *langfuse-depends-on
+    environment: *langfuse-env
+
+  langfuse-web:
+    image: langfuse/langfuse:4.83.0
+    profiles: [observability]
+    depends_on: *langfuse-depends-on
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: finguard-dev-nextauth-secret
+      # Next.js binds to $HOSTNAME, which Docker sets to the container id; listen on all interfaces.
+      HOSTNAME: 0.0.0.0
+      # The browser fetches media through presigned URLs, so they must point at the host port.
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://rustfs:9000
+      # Seeds a ready-to-use org, project and login; the collector exports traces with these keys.
+      LANGFUSE_INIT_ORG_ID: finguard
+      LANGFUSE_INIT_ORG_NAME: FinGuard
+      LANGFUSE_INIT_PROJECT_ID: finguard-dev
+      LANGFUSE_INIT_PROJECT_NAME: finguard-dev
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-finguard-dev
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-finguard-dev
+      LANGFUSE_INIT_USER_EMAIL: admin@finguard.local
+      LANGFUSE_INIT_USER_NAME: FinGuard Admin
+      LANGFUSE_INIT_USER_PASSWORD: finguard-dev
+    ports:
+      - 127.0.0.1:3000:3000
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:3000/api/public/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  kafka-data:
+  redis-data:
+  rustfs-data:
+  neo4j-data:
+  prometheus-data:
+  grafana-data:
+  clickhouse-data:
+  clickhouse-logs:

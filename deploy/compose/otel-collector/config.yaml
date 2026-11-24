@@ -1,0 +1,30 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_http/langfuse:
+    endpoint: http://langfuse-web:3000/api/public/otel
+    headers:
+      # base64("pk-lf-finguard-dev:sk-lf-finguard-dev"), the keys seeded by langfuse-web.
+      Authorization: Basic cGstbGYtZmluZ3VhcmQtZGV2OnNrLWxmLWZpbmd1YXJkLWRldg==
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/langfuse]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
