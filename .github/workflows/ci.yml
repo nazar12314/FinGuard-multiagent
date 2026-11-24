@@ -30,6 +30,15 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run lint-imports
+      - name: Validate the local docker-compose stack
+        run: docker compose -f deploy/compose/compose.yaml --profile observability config --quiet
+      # Catches config keys that an image bump renames, which compose validation can't see.
+      - name: Validate the OpenTelemetry Collector and Prometheus configs
+        run: |
+          docker run --rm -v "$PWD/deploy/compose/otel-collector/config.yaml:/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:0.165.0 validate --config=/config.yaml
+          docker run --rm -v "$PWD/deploy/compose/prometheus/prometheus.yaml:/prometheus.yaml:ro" \
+            --entrypoint promtool prom/prometheus:v3.16.0 check config /prometheus.yaml
 
   test:
     runs-on: ubuntu-latest # Docker is available here for testcontainers
