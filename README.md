@@ -10,11 +10,16 @@ an evidence-cited suspicious transaction report for a human reviewer.
 ```bash
 uv sync
 uv run pre-commit install
-uv run pytest
-FINGUARD_ENV=dev uv run finguard-api   # API on :8000, docs at /docs
+uv run pytest tests/unit                          # fast, no Docker
+uv run pytest tests/integration                   # Postgres and Kafka in testcontainers (needs Docker)
+FINGUARD_ENV=dev uv run finguard-api              # API on :8000, docs at /docs
+FINGUARD_ENV=dev uv run finguard-migrate upgrade head
+FINGUARD_ENV=dev uv run finguard-outbox-relay     # publishes outbox rows to Kafka
 ```
 
-Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required.
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required. `finguard-migrate` is the Alembic command line
+configured from FinGuard's settings (`FINGUARD_DATABASE__URL`), so `history`, `downgrade` and `revision
+--autogenerate` work the same way.
 
 ## Repository layout
 

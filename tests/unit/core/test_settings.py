@@ -32,3 +32,12 @@ def test_api_docs_are_served_outside_prod_only(env: Environment, docs_enabled: b
     settings = Settings.model_construct(env=env)
 
     assert settings.docs_enabled is docs_enabled
+
+
+def test_the_database_url_never_appears_in_reprs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINGUARD_DATABASE__URL", "postgresql+asyncpg://app:s3cret@db/finguard")
+
+    settings = Settings(env="test")
+
+    assert settings.database.url.get_secret_value().endswith("@db/finguard")
+    assert "s3cret" not in repr(settings)

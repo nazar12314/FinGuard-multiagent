@@ -2,8 +2,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from finguard.core.settings import get_settings
-from finguard.entrypoints.api import load_settings_or_exit
+from finguard.core.settings import get_settings, load_settings_or_exit
 
 
 @pytest.fixture(autouse=True)
