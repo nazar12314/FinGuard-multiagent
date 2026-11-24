@@ -20,6 +20,9 @@ from finguard.infrastructure.kafka.topics import subscribed_topics
 from finguard.infrastructure.outbox.relay import OutboxRelay
 from finguard.platform.topics import Topic
 
+# How long a consumer's producer may spend flushing retry and dead-letter copies on shutdown.
+_CONSUMER_PRODUCER_STOP_TIMEOUT_S = 10.0
+
 
 @dataclass(frozen=True, slots=True)
 class Container:
@@ -68,16 +71,14 @@ async def build_message_consumer(
         retry_delays_s=settings.kafka.retry_delays_s,
     )
     session_factory = _open_database(settings, resources)
-    producer = await _start_producer(settings, resources, stop_timeout_s=10.0)
+    producer = await _start_producer(settings, resources, _CONSUMER_PRODUCER_STOP_TIMEOUT_S)
     consumer = create_kafka_consumer(
         settings.kafka.bootstrap_servers,
         group_id=name,
         topics=subscribed_topics(topics, retry_tiers=len(policy.retry_delays_s)),
         policy=policy,
     )
-    resources.push_async_callback(
-        consumer.stop
-    )  # commits nothing; offsets are committed per message
+    resources.push_async_callback(consumer.stop)
     await consumer.start()
     return KafkaMessageConsumer(
         consumer, producer, session_factory, handlers, name=name, policy=policy

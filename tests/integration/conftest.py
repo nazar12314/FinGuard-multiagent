@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from alembic import command
 from sqlalchemy import make_url, text
@@ -135,3 +135,31 @@ def read_topic(kafka_bootstrap_servers: str) -> ReadTopic:
             await consumer.stop()
 
     return read
+
+
+TopicSize = Callable[[str], Awaitable[int]]
+
+
+@pytest.fixture
+def topic_size(kafka_bootstrap_servers: str) -> TopicSize:
+    async def size(topic: str) -> int:
+        """How many records the topic holds, read from its end offsets, without waiting."""
+        admin = AIOKafkaAdminClient(bootstrap_servers=kafka_bootstrap_servers)
+        await admin.start()
+        try:
+            [description] = await admin.describe_topics([topic])
+        finally:
+            await admin.close()
+        partitions = [
+            TopicPartition(topic, partition["partition"]) for partition in description["partitions"]
+        ]
+        assert partitions, f"topic {topic} does not exist"  # an empty sum would read as 0
+        consumer = AIOKafkaConsumer(bootstrap_servers=kafka_bootstrap_servers)
+        await consumer.start()
+        try:
+            offsets: dict[TopicPartition, int] = await consumer.end_offsets(partitions)
+            return sum(offsets.values())
+        finally:
+            await consumer.stop()
+
+    return size

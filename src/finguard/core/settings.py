@@ -36,6 +36,7 @@ class KafkaSettings(BaseModel):
     bootstrap_servers: str = "localhost:9092"
     replication_factor: int = Field(default=1, ge=1)
     # One retry topic per delay. Adding a delay needs `finguard-topics` to run again.
+    # Before removing one, let its topic drain: consumers only read the configured tiers.
     retry_delays_s: tuple[float, ...] = (30.0, 300.0)
 
 
@@ -92,6 +93,8 @@ class Settings(BaseSettings):
             problems.append("database.url must be set explicitly in prod")
         if "bootstrap_servers" not in self.kafka.model_fields_set:
             problems.append("kafka.bootstrap_servers must be set explicitly in prod")
+        if "replication_factor" not in self.kafka.model_fields_set:
+            problems.append("kafka.replication_factor must be set explicitly in prod")
         if problems:
             raise ValueError("; ".join(problems))
         return self

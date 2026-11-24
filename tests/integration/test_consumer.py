@@ -1,7 +1,7 @@
 import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
@@ -29,20 +29,25 @@ from finguard.platform.topics import Topic
 
 SessionFactory = async_sessionmaker[AsyncSession]
 ReadTopic = Callable[..., Awaitable[list[Any]]]
+TopicSize = Callable[[str], Awaitable[int]]
+SettingsFor = Callable[..., Settings]
 HANDLED_TYPE = "cases.case.opened"
 RETRY_DELAY_S = 0.5
 
 
 class RecordingHandler:
-    """Raises the queued failures one per call, then records what it handles."""
+    """Sleeps and raises as scripted, one entry per call, then records what it handles."""
 
-    def __init__(self, *failures: Exception) -> None:
+    def __init__(self, *failures: Exception, delays: tuple[float, ...] = ()) -> None:
         self.failures = list(failures)
+        self.delays = list(delays)
         self.handled: list[Envelope] = []
         self.call_times: list[float] = []
 
     async def __call__(self, envelope: Envelope, session: AsyncSession) -> None:
         self.call_times.append(time.monotonic())
+        if self.delays:
+            await asyncio.sleep(self.delays.pop(0))
         if self.failures:
             raise self.failures.pop(0)
         self.handled.append(envelope)
@@ -51,9 +56,7 @@ class RecordingHandler:
         return [envelope.id for envelope in self.handled]
 
 
-@pytest.fixture
-async def source(kafka_bootstrap_servers: str) -> Topic:
-    topic = Topic(f"test.consumer.{uuid4().hex}", partitions=1)
+async def create(kafka_bootstrap_servers: str, topic: Topic) -> Topic:
     admin = create_kafka_admin(kafka_bootstrap_servers)
     await admin.start()
     try:
@@ -61,6 +64,16 @@ async def source(kafka_bootstrap_servers: str) -> Topic:
     finally:
         await admin.close()
     return topic
+
+
+@pytest.fixture
+async def source(kafka_bootstrap_servers: str) -> Topic:
+    return await create(kafka_bootstrap_servers, Topic(f"test.consumer.{uuid4().hex}", 1))
+
+
+@pytest.fixture
+def group() -> str:
+    return f"test-consumer-{uuid4().hex[:8]}"
 
 
 @pytest.fixture
@@ -72,14 +85,15 @@ async def producer(kafka_bootstrap_servers: str) -> AsyncIterator[AIOKafkaProduc
 
 
 @pytest.fixture
-def settings_for(database_url: str, kafka_bootstrap_servers: str) -> Callable[..., Settings]:
-    def build(**consumer: Any) -> Settings:
+def settings_for(database_url: str, kafka_bootstrap_servers: str) -> SettingsFor:
+    def build(
+        retry_delays_s: tuple[float, ...] = (RETRY_DELAY_S, RETRY_DELAY_S), **consumer: Any
+    ) -> Settings:
         return Settings(
             env="test",
             database=DatabaseSettings(url=SecretStr(database_url)),
             kafka=KafkaSettings(
-                bootstrap_servers=kafka_bootstrap_servers,
-                retry_delays_s=(RETRY_DELAY_S, RETRY_DELAY_S),
+                bootstrap_servers=kafka_bootstrap_servers, retry_delays_s=retry_delays_s
             ),
             consumer=ConsumerSettings(**{"attempts": 1, "attempt_backoff_s": 0.01, **consumer}),
         )
@@ -87,14 +101,11 @@ def settings_for(database_url: str, kafka_bootstrap_servers: str) -> Callable[..
     return build
 
 
-async def consume_until(
-    settings: Settings,
-    source: Topic,
-    handler: RecordingHandler,
-    done: Callable[[], bool],
-    *,
-    name: str = "test-consumer",
-) -> None:
+@asynccontextmanager
+async def running(
+    settings: Settings, source: Topic, handler: RecordingHandler, name: str
+) -> AsyncIterator[tuple[asyncio.Task[None], asyncio.Event]]:
+    """Run a consumer in the background; on exit, stop it and surface any crash."""
     stop = asyncio.Event()
     async with AsyncExitStack() as resources:
         consumer = await build_message_consumer(
@@ -102,14 +113,30 @@ async def consume_until(
         )
         task = asyncio.create_task(consumer.run(stop))
         try:
-            async with asyncio.timeout(30):
-                while not done():
-                    if task.done():
-                        await task
-                    await asyncio.sleep(0.05)
+            yield task, stop
         finally:
             stop.set()
             await task
+
+
+async def wait_until(done: Callable[[], bool], *tasks: asyncio.Task[None]) -> None:
+    async with asyncio.timeout(30):
+        while not done():
+            for task in tasks:
+                if task.done():
+                    await task  # surfaces a crash
+            await asyncio.sleep(0.05)
+
+
+async def consume_until(
+    settings: Settings,
+    source: Topic,
+    handler: RecordingHandler,
+    done: Callable[[], bool],
+    name: str,
+) -> None:
+    async with running(settings, source, handler, name) as (task, _):
+        await wait_until(done, task)
 
 
 async def send(
@@ -117,9 +144,21 @@ async def send(
     topic: str,
     envelope: Envelope | bytes,
     headers: list[tuple[str, bytes]] | None = None,
+    partition: int | None = None,
 ) -> None:
     value = envelope if isinstance(envelope, bytes) else envelope.model_dump_json().encode()
-    await producer.send_and_wait(topic, value, key=b"case-1", headers=headers or [])
+    await producer.send_and_wait(
+        topic, value, key=b"case-1", headers=headers or [], partition=partition
+    )
+
+
+async def committed(kafka_bootstrap_servers: str, group: str, partition: TopicPartition) -> Any:
+    consumer = AIOKafkaConsumer(bootstrap_servers=kafka_bootstrap_servers, group_id=group)
+    await consumer.start()
+    try:
+        return await consumer.committed(partition)
+    finally:
+        await consumer.stop()
 
 
 def new_envelope(type: str = HANDLED_TYPE) -> Envelope:
@@ -132,8 +171,9 @@ def header(record: Any, name: str) -> str:
 
 async def test_a_message_from_the_outbox_reaches_its_handler_and_is_marked_processed(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     kafka_bootstrap_servers: str,
 ) -> None:
     envelope = new_envelope()
@@ -152,20 +192,21 @@ async def test_a_message_from_the_outbox_reaches_its_handler_and_is_marked_proce
         await producer.stop()
     handler = RecordingHandler()
 
-    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled))
+    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled), group)
 
     assert handler.handled == [envelope]
     async with session_factory() as session:
         consumers = list(
             await session.scalars(select(inbox.c.consumer).where(inbox.c.message_id == envelope.id))
         )
-    assert consumers == ["test-consumer"]
+    assert consumers == [group]
 
 
 async def test_a_redelivered_message_is_handled_once(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
 ) -> None:
     envelope, last = new_envelope(), new_envelope()
@@ -173,33 +214,56 @@ async def test_a_redelivered_message_is_handled_once(
         await send(producer, source.name, message)
     handler = RecordingHandler()
 
-    await consume_until(settings_for(), source, handler, lambda: last in handler.handled)
+    await consume_until(settings_for(), source, handler, lambda: last in handler.handled, group)
 
     assert handler.handled_ids() == [envelope.id, last.id]
 
 
 async def test_a_transient_failure_is_retried_in_place(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
-    read_topic: ReadTopic,
+    topic_size: TopicSize,
 ) -> None:
     envelope = new_envelope()
     await send(producer, source.name, envelope)
     handler = RecordingHandler(ConnectionError("db down"), ConnectionError("db down"))
 
-    await consume_until(settings_for(attempts=3), source, handler, lambda: bool(handler.handled))
+    await consume_until(
+        settings_for(attempts=3), source, handler, lambda: bool(handler.handled), group
+    )
 
     assert handler.handled == [envelope]
     assert len(handler.call_times) == 3
-    assert await read_topic(retry_topic(source.name, 1), 1, timeout_s=2) == []
+    assert await topic_size(retry_topic(source.name, 1)) == 0
+
+
+async def test_a_handler_that_runs_too_long_is_cut_off_and_retried(
+    session_factory: SessionFactory,
+    settings_for: SettingsFor,
+    source: Topic,
+    group: str,
+    producer: AIOKafkaProducer,
+) -> None:
+    envelope = new_envelope()
+    await send(producer, source.name, envelope)
+    handler = RecordingHandler(delays=(5.0,))
+    settings = settings_for(attempts=2, handler_timeout_s=0.3)
+
+    await consume_until(settings, source, handler, lambda: bool(handler.handled), group)
+
+    assert handler.handled == [envelope]
+    first_call, second_call = handler.call_times
+    assert second_call - first_call < 2
 
 
 async def test_a_message_recovers_on_a_retry_topic_after_its_delay(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
     read_topic: ReadTopic,
 ) -> None:
@@ -207,58 +271,106 @@ async def test_a_message_recovers_on_a_retry_topic_after_its_delay(
     await send(producer, source.name, envelope)
     handler = RecordingHandler(ConnectionError("db down"))
 
-    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled))
+    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled), group)
 
     first_call, retry_call = handler.call_times
     assert retry_call - first_call >= RETRY_DELAY_S * 0.9
     [copy] = await read_topic(retry_topic(source.name, 1), 1)
-    assert header(copy, CONSUMER_HEADER) == "test-consumer"
+    assert header(copy, CONSUMER_HEADER) == group
     assert header(copy, ORIGIN_HEADER) == f"{source.name}:0:0"
+
+
+async def test_a_waiting_retry_does_not_hold_up_new_messages(
+    session_factory: SessionFactory,
+    settings_for: SettingsFor,
+    source: Topic,
+    group: str,
+    producer: AIOKafkaProducer,
+) -> None:
+    failing, later = new_envelope(), new_envelope()
+    await send(producer, source.name, failing)
+    handler = RecordingHandler(ConnectionError("db down"))
+    settings = settings_for(retry_delays_s=(3.0, 3.0))
+
+    async with running(settings, source, handler, group) as (task, _):
+        await wait_until(lambda: bool(handler.call_times), task)
+        await send(producer, source.name, later)
+        await wait_until(lambda: len(handler.handled) == 2, task)
+
+    assert handler.handled_ids() == [later.id, failing.id]
 
 
 async def test_a_message_that_keeps_failing_ends_in_the_dead_letter_topic(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
     read_topic: ReadTopic,
 ) -> None:
     envelope = new_envelope()
     await send(producer, source.name, envelope)
-    handler = RecordingHandler(*[ConnectionError("db down")] * 3)
+    handler = RecordingHandler(*[ConnectionError("password=hunter2 rejected")] * 3)
 
-    await consume_until(settings_for(), source, handler, lambda: len(handler.call_times) == 3)
+    await consume_until(
+        settings_for(), source, handler, lambda: len(handler.call_times) == 3, group
+    )
 
     [dead] = await read_topic(dead_letter_topic(source.name), 1)
     assert Envelope.model_validate_json(dead.value) == envelope
     assert dead.key == b"case-1"
-    assert header(dead, ERROR_HEADER) == "ConnectionError: db down"
+    # Only the type: driver error text can quote message data.
+    assert header(dead, ERROR_HEADER) == "ConnectionError"
     assert header(dead, ORIGIN_HEADER) == f"{source.name}:0:0"
     assert handler.handled == []
 
 
+async def test_without_retry_tiers_a_failure_goes_straight_to_the_dead_letter_topic(
+    session_factory: SessionFactory,
+    settings_for: SettingsFor,
+    source: Topic,
+    group: str,
+    producer: AIOKafkaProducer,
+    topic_size: TopicSize,
+) -> None:
+    await send(producer, source.name, new_envelope())
+    handler = RecordingHandler(ConnectionError("db down"))
+
+    await consume_until(
+        settings_for(retry_delays_s=()), source, handler, lambda: bool(handler.call_times), group
+    )
+
+    assert await topic_size(retry_topic(source.name, 1)) == 0
+    assert await topic_size(dead_letter_topic(source.name)) == 1
+
+
 async def test_a_permanent_error_goes_straight_to_the_dead_letter_topic(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
     read_topic: ReadTopic,
+    topic_size: TopicSize,
 ) -> None:
     await send(producer, source.name, new_envelope())
     handler = RecordingHandler(ValidationFailed("case already closed"))
 
-    await consume_until(settings_for(attempts=3), source, handler, lambda: bool(handler.call_times))
+    await consume_until(
+        settings_for(attempts=3), source, handler, lambda: bool(handler.call_times), group
+    )
 
     [dead] = await read_topic(dead_letter_topic(source.name), 1)
     assert header(dead, ERROR_HEADER) == "ValidationFailed: case already closed"
     assert len(handler.call_times) == 1
-    assert await read_topic(retry_topic(source.name, 1), 1, timeout_s=2) == []
+    assert await topic_size(retry_topic(source.name, 1)) == 0
 
 
 async def test_a_malformed_message_is_dead_lettered_and_consumption_continues(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
     read_topic: ReadTopic,
 ) -> None:
@@ -267,18 +379,19 @@ async def test_a_malformed_message_is_dead_lettered_and_consumption_continues(
     await send(producer, source.name, last)
     handler = RecordingHandler()
 
-    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled))
+    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled), group)
 
     assert handler.handled == [last]
     [dead] = await read_topic(dead_letter_topic(source.name), 1)
     assert dead.value == b"{not json"
-    assert header(dead, ERROR_HEADER).startswith("ValidationError")
+    assert header(dead, ERROR_HEADER) == "ValidationError: value: json_invalid"
 
 
 async def test_messages_of_other_types_are_skipped(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
 ) -> None:
     other, last = new_envelope("cases.case.closed"), new_envelope()
@@ -286,37 +399,40 @@ async def test_messages_of_other_types_are_skipped(
     await send(producer, source.name, last)
     handler = RecordingHandler()
 
-    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled))
+    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled), group)
 
     assert handler.handled == [last]
     async with session_factory() as session:
-        assert (
-            await session.scalar(select(inbox.c.message_id).where(inbox.c.message_id == other.id))
-            is None
+        recorded = await session.scalar(
+            select(inbox.c.message_id).where(inbox.c.message_id == other.id)
         )
+    assert recorded is None
 
 
-async def test_retry_copies_for_another_consumer_group_are_ignored(
+async def test_retry_copies_not_addressed_to_the_consumer_are_ignored(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
 ) -> None:
-    theirs, ours = new_envelope(), new_envelope()
+    unaddressed, theirs, ours = new_envelope(), new_envelope(), new_envelope()
     tier = retry_topic(source.name, 1)
+    await send(producer, tier, unaddressed)
     await send(producer, tier, theirs, [(CONSUMER_HEADER, b"another-consumer")])
-    await send(producer, tier, ours, [(CONSUMER_HEADER, b"test-consumer")])
+    await send(producer, tier, ours, [(CONSUMER_HEADER, group.encode())])
     handler = RecordingHandler()
 
-    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled))
+    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled), group)
 
     assert handler.handled == [ours]
 
 
 async def test_handled_messages_are_committed_so_a_restart_resumes_after_them(
     session_factory: SessionFactory,
-    settings_for: Callable[..., Settings],
+    settings_for: SettingsFor,
     source: Topic,
+    group: str,
     producer: AIOKafkaProducer,
     kafka_bootstrap_servers: str,
 ) -> None:
@@ -324,11 +440,55 @@ async def test_handled_messages_are_committed_so_a_restart_resumes_after_them(
     await send(producer, source.name, new_envelope())
     handler = RecordingHandler()
 
-    await consume_until(settings_for(), source, handler, lambda: len(handler.handled) == 2)
+    await consume_until(settings_for(), source, handler, lambda: len(handler.handled) == 2, group)
 
-    group = AIOKafkaConsumer(bootstrap_servers=kafka_bootstrap_servers, group_id="test-consumer")
-    await group.start()
-    try:
-        assert await group.committed(TopicPartition(source.name, 0)) == 2
-    finally:
-        await group.stop()
+    assert await committed(kafka_bootstrap_servers, group, TopicPartition(source.name, 0)) == 2
+
+
+async def test_stopping_during_retries_abandons_the_message_uncommitted(
+    session_factory: SessionFactory,
+    settings_for: SettingsFor,
+    source: Topic,
+    group: str,
+    producer: AIOKafkaProducer,
+    kafka_bootstrap_servers: str,
+    topic_size: TopicSize,
+) -> None:
+    await send(producer, source.name, new_envelope())
+    handler = RecordingHandler(*[ConnectionError("db down")] * 3)
+    settings = settings_for(attempts=3, attempt_backoff_s=60)
+
+    async with running(settings, source, handler, group) as (task, stop):
+        await wait_until(lambda: bool(handler.call_times), task)
+        stop.set()
+        # The one-minute backoff would time this out if shutdown waited for it.
+        await asyncio.wait_for(asyncio.shield(task), timeout=5)
+
+    assert len(handler.call_times) == 1
+    assert await committed(kafka_bootstrap_servers, group, TopicPartition(source.name, 0)) is None
+    assert await topic_size(retry_topic(source.name, 1)) == 0
+
+
+async def test_a_rebalance_during_handling_neither_crashes_nor_duplicates_work(
+    session_factory: SessionFactory,
+    settings_for: SettingsFor,
+    group: str,
+    producer: AIOKafkaProducer,
+    kafka_bootstrap_servers: str,
+) -> None:
+    wide = await create(kafka_bootstrap_servers, Topic(f"test.consumer.{uuid4().hex}", 2))
+    envelopes = [new_envelope() for _ in range(6)]
+    for index, envelope in enumerate(envelopes):
+        await send(producer, wide.name, envelope, partition=index % 2)
+    slow, fast = RecordingHandler(delays=(1.0,) * 6), RecordingHandler()
+    settings = settings_for()
+
+    async with running(settings, wide, slow, group) as (first, _):
+        await wait_until(lambda: bool(slow.call_times), first)
+        # A second member joins while the first is mid-handler, so a partition is revoked
+        # from under it.
+        async with running(settings, wide, fast, group) as (second, _):
+            await wait_until(lambda: len(slow.handled) + len(fast.handled) == 6, first, second)
+
+    handled = slow.handled_ids() + fast.handled_ids()
+    assert sorted(handled) == sorted(envelope.id for envelope in envelopes)

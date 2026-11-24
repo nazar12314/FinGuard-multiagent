@@ -1,12 +1,15 @@
 import asyncio
 import time
+import traceback
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 import structlog
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
+from aiokafka.errors import CommitFailedError, IllegalStateError
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -36,6 +39,8 @@ class ConsumerEvent(StrEnum):
     DUPLICATE_SKIPPED = "consumer.duplicate_skipped"
     RETRY_SCHEDULED = "consumer.retry_scheduled"
     DEAD_LETTERED = "consumer.dead_lettered"
+    UNADDRESSED_COPY_SKIPPED = "consumer.unaddressed_copy_skipped"
+    COMMIT_LOST_TO_REBALANCE = "consumer.commit_lost_to_rebalance"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +63,35 @@ def is_permanent(error: Exception) -> bool:
     if isinstance(error, ValidationError):
         return True
     return isinstance(error, ApplicationError) and not isinstance(error, DependencyUnavailable)
+
+
+def describe(error: Exception) -> str:
+    """The error's type, plus its message only where that can't carry message data.
+
+    Driver and validation errors quote the values they choke on, and this text goes
+    into logs and Kafka headers.
+    """
+    name = type(error).__name__
+    if isinstance(error, ApplicationError):
+        return f"{name}: {error.message}"
+    if isinstance(error, ValidationError):
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in problem['loc']) or 'value'}: {problem['type']}"
+            for problem in error.errors(include_input=False)
+        )
+        return f"{name}: {problems}"
+    return name
+
+
+def _frames(error: Exception) -> list[str]:
+    return [
+        f"{frame.filename}:{frame.lineno} in {frame.name}"
+        for frame in traceback.extract_tb(error.__traceback__)
+    ]
+
+
+class _Stopping(Exception):
+    """Raised to abandon a message, uncommitted, when shutdown interrupts its retries."""
 
 
 def create_kafka_consumer(
@@ -102,27 +136,60 @@ class KafkaMessageConsumer:
         self._name = name
         self._policy = policy
         self._paused_until: dict[TopicPartition, float] = {}
+        self._stop = asyncio.Event()
 
     async def run(self, stop: asyncio.Event) -> None:
         """Consume until `stop` is set. Raises if a copy can't be handed on to Kafka;
         the offset isn't committed then, so the message is redelivered after a restart."""
+        self._stop = stop
         while not stop.is_set():
             self._resume_due_partitions()
-            batches = await self._consumer.getmany(timeout_ms=200, max_records=100)
+            # One record per poll, so max.poll.interval.ms only has to cover handling one
+            # message. aiokafka still fetches ahead in the background.
+            batches = await self._consumer.getmany(timeout_ms=200, max_records=1)
             for partition, records in batches.items():
                 for record in records:
-                    if stop.is_set():
+                    try:
+                        await self._consume(partition, record)
+                    except _Stopping:
                         return
-                    due_at = self._due_at(record)
-                    if due_at > time.time():
-                        # Not due yet: rewind and pause this partition instead of sleeping,
-                        # so the other partitions keep flowing and the consumer stays polled.
-                        self._consumer.seek(partition, record.offset)
-                        self._consumer.pause(partition)
-                        self._paused_until[partition] = due_at
-                        break
-                    await self._process(record)
-                    await self._consumer.commit({partition: record.offset + 1})
+
+    async def _consume(self, partition: TopicPartition, record: Any) -> None:
+        # Kafka can take the partition away during any await (a rebalance). Calls without
+        # an await in between see a stable assignment.
+        if not self._owns(partition):
+            return
+        if not self._addressed_to_us(record):
+            await self._commit(partition, record)
+            return
+        due_at = self._due_at(record)
+        if due_at > time.time():
+            # Not due yet: rewind and pause this partition instead of sleeping, so the
+            # other partitions keep flowing and the consumer keeps polling.
+            self._consumer.seek(partition, record.offset)
+            self._consumer.pause(partition)
+            self._paused_until[partition] = due_at
+            return
+        await self._process(record)
+        await self._commit(partition, record)
+
+    def _owns(self, partition: TopicPartition) -> bool:
+        return partition in self._consumer.assignment()
+
+    async def _commit(self, partition: TopicPartition, record: Any) -> None:
+        if not self._owns(partition):
+            return
+        try:
+            await self._consumer.commit({partition: record.offset + 1})
+        except (CommitFailedError, IllegalStateError):
+            # The partition moved to another consumer, which receives this message again;
+            # the inbox makes that harmless.
+            logger.info(
+                ConsumerEvent.COMMIT_LOST_TO_REBALANCE,
+                topic=record.topic,
+                partition=record.partition,
+                offset=record.offset,
+            )
 
     def _resume_due_partitions(self) -> None:
         assigned = self._consumer.assignment()
@@ -134,20 +201,30 @@ class KafkaMessageConsumer:
                 self._consumer.resume(partition)
                 del self._paused_until[partition]
 
+    def _addressed_to_us(self, record: Any) -> bool:
+        if split_retry_topic(record.topic)[1] == 0:
+            return True
+        consumer = dict(record.headers).get(CONSUMER_HEADER)
+        if consumer is None:
+            logger.warning(
+                ConsumerEvent.UNADDRESSED_COPY_SKIPPED,
+                topic=record.topic,
+                partition=record.partition,
+                offset=record.offset,
+            )
+        return consumer == self._name.encode()
+
     def _due_at(self, record: Any) -> float:
         _, tier = split_retry_topic(record.topic)
         if tier == 0:
             return 0.0
-        delays = self._policy.retry_delays_s
-        timestamp_s: float = record.timestamp / 1000
-        return timestamp_s + delays[min(tier, len(delays)) - 1]
+        delay = self._policy.retry_delays_s[tier - 1]
+        # Capped at now + delay, so a producer clock running ahead can't stretch the wait.
+        handed_on_at = min(record.timestamp / 1000, time.time())
+        return float(handed_on_at + delay)
 
     async def _process(self, record: Any) -> None:
         source, tier = split_retry_topic(record.topic)
-        headers = dict(record.headers)
-        if tier and headers.get(CONSUMER_HEADER) != self._name.encode():
-            return  # a retry copy meant for another consumer group
-
         try:
             envelope = Envelope.model_validate_json(record.value)
         except ValidationError as error:
@@ -187,11 +264,16 @@ class KafkaMessageConsumer:
                     message_type=envelope.type,
                     attempt=attempt,
                     permanent=permanent,
-                    exc_info=error,
+                    error=describe(error),
+                    frames=_frames(error),
                 )
                 if permanent or attempt >= self._policy.attempts:
                     return error
-                await asyncio.sleep(self._policy.attempt_backoff_s * 2 ** (attempt - 1))
+                backoff = self._policy.attempt_backoff_s * 2 ** (attempt - 1)
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                if self._stop.is_set():
+                    raise _Stopping from error
                 attempt += 1
 
     async def _hand_on(self, record: Any, topic: str, error: Exception) -> None:
@@ -203,7 +285,7 @@ class KafkaMessageConsumer:
         headers = [(key, value) for key, value in record.headers if not key.startswith("finguard-")]
         headers += [
             (CONSUMER_HEADER, self._name.encode()),
-            (ERROR_HEADER, f"{type(error).__name__}: {error}"[:1000].encode()),
+            (ERROR_HEADER, describe(error)[:1000].encode()),
             (ORIGIN_HEADER, origin),
         ]
         await self._producer.send_and_wait(topic, record.value, key=record.key, headers=headers)
@@ -212,5 +294,5 @@ class KafkaMessageConsumer:
             ConsumerEvent.DEAD_LETTERED if dead_lettered else ConsumerEvent.RETRY_SCHEDULED,
             topic=topic,
             origin=origin.decode(),
-            error=type(error).__name__,
+            error=describe(error),
         )

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from finguard.infrastructure.kafka.consumer import RetryPolicy, is_permanent
+from finguard.infrastructure.kafka.consumer import RetryPolicy, describe, is_permanent
 from finguard.platform.errors import Conflict, DependencyUnavailable, NotFound, ValidationFailed
 
 
@@ -39,3 +39,13 @@ def test_the_longest_handling_time_covers_every_attempt_and_backoff() -> None:
     )
 
     assert policy.longest_handling_s == 3 * 60 + 0.5 + 1.0
+
+
+def test_error_descriptions_never_quote_message_data() -> None:
+    assert describe(ValidationFailed("closing needs a rationale")) == (
+        "ValidationFailed: closing needs a rationale"
+    )
+    assert describe(validation_error()) == "ValidationError: value: int_parsing"
+    assert describe(ConnectionError("Key (iban)=(DE89 3704 0044) already exists")) == (
+        "ConnectionError"
+    )
