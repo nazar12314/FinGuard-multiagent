@@ -23,6 +23,7 @@ class LogEvent(StrEnum):
     OUTBOX_PUBLISH_TIMED_OUT = "outbox.publish_timed_out"
     OUTBOX_MESSAGE_PARKED = "outbox.message_parked"
     OUTBOX_RELAY_GAVE_UP = "outbox.relay_gave_up"
+    KAFKA_TOPICS_ENSURED = "kafka.topics_ensured"
     OUTBOX_PRUNED = "outbox.pruned"
     OUTBOX_PRUNE_FAILED = "outbox.prune_failed"
 

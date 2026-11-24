@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from aiokafka import AIOKafkaProducer
+from aiokafka.admin import AIOKafkaAdminClient
 from aiokafka.errors import (
     InvalidTopicError,
     MessageSizeTooLargeError,
@@ -37,6 +38,10 @@ def create_kafka_producer(bootstrap_servers: str) -> AIOKafkaProducer:
         acks="all",
         enable_idempotence=True,
     )
+
+
+def create_kafka_admin(bootstrap_servers: str) -> AIOKafkaAdminClient:
+    return AIOKafkaAdminClient(bootstrap_servers=bootstrap_servers)
 
 
 class KafkaPublisher:

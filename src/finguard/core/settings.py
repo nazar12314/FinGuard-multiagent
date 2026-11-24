@@ -34,6 +34,16 @@ class DatabaseSettings(BaseModel):
 class KafkaSettings(BaseModel):
     # The default matches the local docker-compose stack; prod must set it explicitly.
     bootstrap_servers: str = "localhost:9092"
+    replication_factor: int = Field(default=1, ge=1)
+    # One retry topic per delay. Adding a delay needs `finguard-topics` to run again.
+    retry_delays_s: tuple[float, ...] = (30.0, 300.0)
+
+
+class ConsumerSettings(BaseModel):
+    # In-process attempts before a failing message moves to the next retry topic.
+    attempts: int = Field(default=3, ge=1)
+    attempt_backoff_s: float = Field(default=0.5, ge=0)
+    handler_timeout_s: float = Field(default=60.0, gt=0)
 
 
 class OutboxRelaySettings(BaseModel):
@@ -67,6 +77,7 @@ class Settings(BaseSettings):
     auth: AuthSettings = AuthSettings()
     database: DatabaseSettings = DatabaseSettings()
     kafka: KafkaSettings = KafkaSettings()
+    consumer: ConsumerSettings = ConsumerSettings()
     outbox_relay: OutboxRelaySettings = OutboxRelaySettings()
 
     @model_validator(mode="after")

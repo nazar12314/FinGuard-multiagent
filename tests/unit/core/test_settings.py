@@ -59,3 +59,9 @@ def test_the_database_url_never_appears_in_reprs(monkeypatch: pytest.MonkeyPatch
 
     assert settings.database.url.get_secret_value().endswith("@db/finguard")
     assert "s3cret" not in repr(settings)
+
+
+def test_retry_delays_are_read_as_a_json_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINGUARD_KAFKA__RETRY_DELAYS_S", "[10, 60, 600]")
+
+    assert Settings(env="test").kafka.retry_delays_s == (10.0, 60.0, 600.0)

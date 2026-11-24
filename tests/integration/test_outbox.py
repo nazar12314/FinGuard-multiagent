@@ -1,13 +1,12 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from aiokafka import AIOKafkaConsumer
-from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+from aiokafka.admin import NewTopic
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -24,6 +23,8 @@ from finguard.platform.envelope import Envelope
 from finguard.platform.errors import ValidationFailed
 
 SessionFactory = async_sessionmaker[AsyncSession]
+CreateTopics = Callable[..., Awaitable[None]]
+ReadTopic = Callable[..., Awaitable[list[Any]]]
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
 
@@ -36,8 +37,10 @@ async def publisher(kafka_bootstrap_servers: str) -> AsyncIterator[KafkaPublishe
 
 
 @pytest.fixture
-def topic() -> str:
-    return f"test.outbox.{uuid4().hex}"
+async def topic(create_topics: CreateTopics) -> str:
+    name = f"test.outbox.{uuid4().hex}"
+    await create_topics(NewTopic(name, 1, 1))
+    return name
 
 
 class RecordingPublisher:
@@ -76,24 +79,7 @@ async def write(
 ) -> None:
     async with session_factory.begin() as session:
         for envelope in envelopes:
-            await PostgresOutbox(session).add(envelope, topic=topic, key=key)
-
-
-async def consume(bootstrap_servers: str, topic: str, count: int) -> list[Any]:
-    consumer = AIOKafkaConsumer(
-        topic, bootstrap_servers=bootstrap_servers, auto_offset_reset="earliest"
-    )
-    await consumer.start()
-    try:
-        records: list[Any] = []
-        while len(records) < count:
-            batches = await consumer.getmany(timeout_ms=10_000)
-            if not batches:
-                break
-            records.extend(record for batch in batches.values() for record in batch)
-        return records
-    finally:
-        await consumer.stop()
+            await PostgresOutbox(session, topics={topic}).add(envelope, topic=topic, key=key)
 
 
 async def pending_count(session_factory: SessionFactory) -> int:
@@ -117,7 +103,7 @@ def indexes(messages: list[OutgoingMessage]) -> list[int]:
 async def test_a_committed_message_is_published_once_with_its_key_and_trace(
     session_factory: SessionFactory,
     publisher: KafkaPublisher,
-    kafka_bootstrap_servers: str,
+    read_topic: ReadTopic,
     topic: str,
 ) -> None:
     envelope = new_envelope().model_copy(update={"traceparent": TRACEPARENT})
@@ -127,7 +113,7 @@ async def test_a_committed_message_is_published_once_with_its_key_and_trace(
     assert await relay.publish_pending() == 1
     assert await relay.publish_pending() == 0
 
-    [record] = await consume(kafka_bootstrap_servers, topic, 1)
+    [record] = await read_topic(topic, 1)
     assert record.key == b"case-1"
     assert json.loads(record.value) == envelope.model_dump(mode="json")
     assert ("traceparent", TRACEPARENT.encode()) in record.headers
@@ -139,7 +125,9 @@ async def test_a_failed_transaction_leaves_nothing_to_publish(
 ) -> None:
     async def add_then_fail() -> None:
         async with session_factory.begin() as session:
-            await PostgresOutbox(session).add(new_envelope(), topic=topic, key="case-1")
+            await PostgresOutbox(session, topics={topic}).add(
+                new_envelope(), topic=topic, key="case-1"
+            )
             raise RuntimeError("state change failed")
 
     with pytest.raises(RuntimeError):
@@ -152,7 +140,7 @@ async def test_a_message_too_large_for_kafka_is_refused_by_the_writer(
     session_factory: SessionFactory, topic: str
 ) -> None:
     async with session_factory() as session:
-        small_outbox = PostgresOutbox(session, max_message_bytes=200)
+        small_outbox = PostgresOutbox(session, max_message_bytes=200, topics={topic})
 
         with pytest.raises(ValidationFailed, match="over the 200 limit"):
             await small_outbox.add(
@@ -163,7 +151,7 @@ async def test_a_message_too_large_for_kafka_is_refused_by_the_writer(
 async def test_messages_are_published_in_the_order_they_were_written(
     session_factory: SessionFactory,
     publisher: KafkaPublisher,
-    kafka_bootstrap_servers: str,
+    read_topic: ReadTopic,
     topic: str,
 ) -> None:
     envelopes = [new_envelope(index) for index in range(5)]
@@ -173,7 +161,7 @@ async def test_messages_are_published_in_the_order_they_were_written(
 
     assert [await relay.publish_pending() for _ in range(4)] == [2, 2, 1, 0]
 
-    records = await consume(kafka_bootstrap_servers, topic, 5)
+    records = await read_topic(topic, 5)
     assert [json.loads(record.value)["id"] for record in records] == [
         str(envelope.id) for envelope in envelopes
     ]
@@ -199,7 +187,9 @@ async def test_order_follows_inserts_when_an_earlier_transaction_commits_later(
         # writer queued behind another one's row lock does.
         await slow_writer.execute(text("SELECT 1"))
         await write(session_factory, topic, new_envelope(1))
-        await PostgresOutbox(slow_writer).add(new_envelope(2), topic=topic, key="case-1")
+        await PostgresOutbox(slow_writer, topics={topic}).add(
+            new_envelope(2), topic=topic, key="case-1"
+        )
         await slow_writer.commit()
     publisher = RecordingPublisher()
 
@@ -258,21 +248,12 @@ async def test_a_refused_message_is_parked_and_later_messages_still_flow(
 
 
 async def test_kafka_refusing_an_oversized_message_parks_it(
-    session_factory: SessionFactory,
-    publisher: KafkaPublisher,
-    kafka_bootstrap_servers: str,
-    topic: str,
+    session_factory: SessionFactory, publisher: KafkaPublisher, create_topics: CreateTopics
 ) -> None:
-    admin = AIOKafkaAdminClient(bootstrap_servers=kafka_bootstrap_servers)
-    await admin.start()
-    try:
-        await admin.create_topics(
-            [NewTopic(topic, 1, 1, topic_configs={"max.message.bytes": "1000"})]
-        )
-    finally:
-        await admin.close()
+    small_topic = f"test.outbox.small.{uuid4().hex}"
+    await create_topics(NewTopic(small_topic, 1, 1, topic_configs={"max.message.bytes": "1000"}))
     oversized = Envelope.new("cases.case.opened", {"memo": "x" * 5000})
-    await write(session_factory, topic, oversized)
+    await write(session_factory, small_topic, oversized)
 
     with pytest.raises(MessageParked) as parked:
         await relay_for(session_factory, publisher).publish_pending()
@@ -280,6 +261,16 @@ async def test_kafka_refusing_an_oversized_message_parks_it(
     assert parked.value.message_id == oversized.id
     assert "MessageSizeTooLarge" in parked.value.reason
     assert await pending_count(session_factory) == 0
+
+
+async def test_a_message_for_an_unknown_topic_is_refused_by_the_writer(
+    session_factory: SessionFactory, topic: str
+) -> None:
+    async with session_factory() as session:
+        with pytest.raises(ValidationFailed, match="unknown topic"):
+            await PostgresOutbox(session, topics={topic}).add(
+                new_envelope(), topic="cases.evnets", key="case-1"
+            )
 
 
 async def test_only_one_relay_publishes_at_a_time(
