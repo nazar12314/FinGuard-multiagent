@@ -24,7 +24,9 @@ schema boundary: modules exchange ids and events instead.
 Migrations form a single linear Alembic history inside the package (`finguard.infrastructure.db:migrations`),
 run with `finguard-migrate`. One history keeps the order of cross-module changes obvious and ships with the
 image. Table definitions live next to the adapters that use them and share one `MetaData` with a fixed naming
-convention, so `alembic check` in the integration tests catches drift between the tables and the migrations.
+convention. `finguard-migrate` imports every table module and hands that metadata to Alembic, because the
+migration environment sits in `infrastructure` and may not import modules. `alembic check` in the integration
+tests catches drift between the tables and the migrations.
 
 ## Consequences
 
