@@ -29,7 +29,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    env: Environment = "dev"
+    # No default: a deployment that forgets FINGUARD_ENV must not boot as dev.
+    env: Environment
     service_name: str = "finguard"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["json", "console"] = "json"

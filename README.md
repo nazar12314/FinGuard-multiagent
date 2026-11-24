@@ -11,6 +11,7 @@ an evidence-cited suspicious transaction report for a human reviewer.
 uv sync
 uv run pre-commit install
 uv run pytest
+FINGUARD_ENV=dev uv run finguard-api   # API on :8000, docs at /docs
 ```
 
 Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required.
