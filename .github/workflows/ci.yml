@@ -32,6 +32,17 @@ jobs:
       - run: uv run lint-imports
 
   test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest tests/unit
+
+  integration:
     runs-on: ubuntu-latest # Docker is available here for testcontainers
     steps:
       - uses: actions/checkout@v7
@@ -40,4 +51,4 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run pytest
+      - run: uv run pytest tests/integration
