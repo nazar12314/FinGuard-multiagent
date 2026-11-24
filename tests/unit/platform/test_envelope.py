@@ -29,7 +29,7 @@ envelopes = st.builds(
     occurred_at=st.datetimes(timezones=st.just(UTC)),
     correlation_id=st.uuids(),
     causation_id=st.none() | st.uuids(),
-    traceparent=st.none() | st.just(TRACEPARENT),
+    traceparent=st.none() | st.just(TRACEPARENT) | st.text(),
     data=st.dictionaries(st.text(), json_values, max_size=5),
 )
 
@@ -94,15 +94,25 @@ def test_occurred_at_is_normalised_to_utc() -> None:
         {"type": "NotDotted"},
         {"type": "cases."},
         {"version": 0},
-        {"traceparent": "not-a-traceparent"},
     ],
-    ids=["naive-datetime", "undotted-type", "empty-segment", "zero-version", "bad-traceparent"],
+    ids=["naive-datetime", "undotted-type", "empty-segment", "zero-version"],
 )
 def test_rejects_invalid_envelopes(override: dict[str, Any]) -> None:
     fields: dict[str, Any] = {"type": "cases.case.opened", "correlation_id": new_id(), "data": {}}
 
     with pytest.raises(ValidationError):
         Envelope(**(fields | override))
+
+
+def test_malformed_traceparent_does_not_reject_the_message() -> None:
+    envelope = Envelope(
+        type="cases.case.opened",
+        correlation_id=new_id(),
+        traceparent="not-a-traceparent",
+        data={},
+    )
+
+    assert envelope.traceparent == "not-a-traceparent"
 
 
 def test_unknown_top_level_fields_from_newer_producers_are_ignored() -> None:

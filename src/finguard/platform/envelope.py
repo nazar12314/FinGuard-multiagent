@@ -7,7 +7,6 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, fie
 from finguard.platform.ids import new_id
 
 MESSAGE_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
-TRACEPARENT_PATTERN = r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
 
 
 class Envelope(BaseModel):
@@ -26,7 +25,9 @@ class Envelope(BaseModel):
     occurred_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     correlation_id: UUID
     causation_id: UUID | None = None
-    traceparent: str | None = Field(default=None, pattern=TRACEPARENT_PATTERN)
+    # Left unvalidated: the OpenTelemetry propagator parses it and drops invalid values,
+    # and a malformed trace header must never send a business message to the DLQ.
+    traceparent: str | None = None
     data: dict[str, JsonValue]
 
     @field_validator("occurred_at")
