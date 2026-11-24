@@ -1,7 +1,8 @@
+import sys
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_PREFIX = "FINGUARD_"
@@ -21,6 +22,33 @@ class AuthSettings(BaseModel):
     mode: Literal["dev_header"] = "dev_header"
 
 
+class DatabaseSettings(BaseModel):
+    # The default matches the local docker-compose stack; prod must set it explicitly.
+    url: SecretStr = SecretStr("postgresql+asyncpg://finguard:finguard@localhost:5432/finguard")
+    pool_size: int = Field(default=5, ge=1)
+    # Postgres ends a session that sits idle inside a transaction this long, so a stuck
+    # process can't hold locks or block vacuum indefinitely.
+    idle_in_transaction_timeout_s: float = Field(default=60.0, gt=0)
+
+
+class KafkaSettings(BaseModel):
+    # The default matches the local docker-compose stack; prod must set it explicitly.
+    bootstrap_servers: str = "localhost:9092"
+
+
+class OutboxRelaySettings(BaseModel):
+    poll_interval_s: float = Field(default=1.0, gt=0)
+    batch_size: int = Field(default=100, ge=1)
+    # Upper bound on publishing one batch. Past it the producer is assumed stuck and the
+    # process exits, so it must stay below the database's idle-in-transaction timeout.
+    publish_timeout_s: float = Field(default=10.0, gt=0)
+    max_retry_delay_s: float = Field(default=30.0, gt=0)
+    # After this many failed attempts in a row the process exits and starts afresh.
+    max_consecutive_failures: int = Field(default=5, ge=1)
+    retention_days: int = Field(default=7, ge=1)
+    prune_interval_s: float = Field(default=3600.0, gt=0)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -37,11 +65,24 @@ class Settings(BaseSettings):
 
     api: ApiSettings = ApiSettings()
     auth: AuthSettings = AuthSettings()
+    database: DatabaseSettings = DatabaseSettings()
+    kafka: KafkaSettings = KafkaSettings()
+    outbox_relay: OutboxRelaySettings = OutboxRelaySettings()
 
     @model_validator(mode="after")
-    def _no_dev_auth_in_prod(self) -> Self:
-        if self.env == "prod" and self.auth.mode == "dev_header":
-            raise ValueError("auth.mode 'dev_header' trusts client headers and is not for prod")
+    def _safe_for_prod(self) -> Self:
+        if self.env != "prod":
+            return self
+        problems = []
+        if self.auth.mode == "dev_header":
+            problems.append("auth.mode 'dev_header' trusts client headers and is not for prod")
+        # A forgotten variable must fail at startup, not fall back to the local stack.
+        if "url" not in self.database.model_fields_set:
+            problems.append("database.url must be set explicitly in prod")
+        if "bootstrap_servers" not in self.kafka.model_fields_set:
+            problems.append("kafka.bootstrap_servers must be set explicitly in prod")
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
 
     @property
@@ -52,3 +93,26 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def load_settings_or_exit() -> Settings:
+    """Load settings, or print each invalid value with the env var to fix and exit."""
+    try:
+        return get_settings()
+    except ValidationError as exc:
+        for error in exc.errors(include_input=False):
+            path = ".".join(str(part) for part in error["loc"]) or "settings"
+            hint = f" ({_env_var_hint(error['loc'])})" if error["loc"] else ""
+            print(f"config error: {path}{hint}: {error['msg']}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+def _env_var_hint(location: tuple[int | str, ...]) -> str:
+    name = ENV_PREFIX + ENV_NESTED_DELIMITER.join(str(part).upper() for part in location)
+    field = Settings.model_fields.get(str(location[0])) if len(location) == 1 else None
+    is_section = (
+        field is not None
+        and isinstance(field.annotation, type)
+        and issubclass(field.annotation, BaseModel)
+    )
+    return f"{name}{ENV_NESTED_DELIMITER}*" if is_section else name

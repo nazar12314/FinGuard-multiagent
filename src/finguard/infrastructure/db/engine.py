@@ -1,0 +1,22 @@
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+
+def create_database_engine(
+    url: str, *, pool_size: int, idle_in_transaction_timeout_s: float
+) -> AsyncEngine:
+    timeout_ms = str(int(idle_in_transaction_timeout_s * 1000))
+    return create_async_engine(
+        url,
+        pool_size=pool_size,
+        pool_pre_ping=True,
+        connect_args={"server_settings": {"idle_in_transaction_session_timeout": timeout_ms}},
+    )
+
+
+def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(engine, expire_on_commit=False)

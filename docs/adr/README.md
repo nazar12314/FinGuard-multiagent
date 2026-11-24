@@ -11,7 +11,7 @@ implemented, and keep this index in sync with the decision log in Notion.
 | 003b | Temporal for the case lifecycle, LangGraph inside activities | Planned |
 | 004 | Specialist agents as separate Kafka workers | Accepted |
 | 005 | LLMs only on escalated alerts, never per transaction | Accepted |
-| 006 | One Postgres, a schema per module, no cross-schema queries | Accepted |
+| [006](006-one-postgres-schema-per-module.md) | One Postgres, a schema per module, no cross-schema queries | Accepted |
 | 007 | Tools exposed as MCP servers with per-agent authorization | Accepted |
 | 008 | JSON Schema contracts + registry, backward-compatible evolution | Accepted |
 | 009 | pgvector instead of a dedicated vector database | Accepted |
