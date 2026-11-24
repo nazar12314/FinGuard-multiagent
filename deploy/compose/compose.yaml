@@ -52,7 +52,8 @@ services:
       - postgres-data:/var/lib/postgresql
       - ./postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U finguard -d finguard"]
+      # Over TCP: during first init a temporary server answers on the Unix socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U finguard -d finguard"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -117,7 +118,8 @@ services:
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # redis-cli exits 0 even on NOAUTH or LOADING, so check the reply itself.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -139,7 +141,8 @@ services:
       timeout: 3s
       retries: 20
 
-  # Creates Langfuse's bucket; the image's built-in bucket bootstrap fails in 1.0.6.
+  # Creates Langfuse's bucket; the image's built-in bucket bootstrap fails in 1.0.6. It sits in the
+  # observability profile because `up --wait` fails on an exited one-shot job that nothing depends on.
   rustfs-init:
     image: rustfs/rustfs:1.0.6
     profiles: [observability]

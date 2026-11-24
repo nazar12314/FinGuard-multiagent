@@ -22,20 +22,23 @@ The infrastructure runs in Docker Compose; FinGuard's own processes run on the h
 
 ```bash
 docker compose -f deploy/compose/compose.yaml up -d --wait                          # core (~1.5 GB RAM)
-docker compose -f deploy/compose/compose.yaml --profile observability up -d --wait  # + observability (~4 GB)
+docker compose -f deploy/compose/compose.yaml --profile observability up -d --wait  # + observability (~5.5 GB)
 docker compose -f deploy/compose/compose.yaml --profile observability down          # stop (add -v to wipe data)
 ```
 
+Keep `--profile observability` on `down` even after a core-only `up`, or containers started with the profile
+keep running.
+
 | Service | Profile | Address on the host | Local credentials |
 | --- | --- | --- | --- |
-| Postgres 18 + pgvector + pg_trgm | core | `localhost:5432`, database `finguard` | `finguard` / `finguard` |
+| Postgres 18 with pgvector and pg_trgm (extensions are created by migrations) | core | `localhost:5432`, database `finguard` | `finguard` / `finguard` |
 | Kafka (KRaft) | core | `localhost:9092` | none |
 | Apicurio Registry | core | http://localhost:8080 (Confluent-compatible API at `/apis/ccompat/v7`) | none |
 | Redis | core | `localhost:6379` | password `finguard` |
 | RustFS (S3-compatible) | core | S3 API http://localhost:9000, console http://localhost:9001/rustfs/console/ | `finguard` / `finguard-dev-secret` |
 | Neo4j Community | core | http://localhost:7474, `bolt://localhost:7687` | `neo4j` / `finguard-dev` |
 | OpenTelemetry Collector | observability | OTLP gRPC `localhost:4317`, HTTP `localhost:4318` | none |
-| Langfuse | observability | http://localhost:3000 | `admin@finguard.local` / `finguard-dev` |
+| Langfuse | observability | http://localhost:3000 | `admin@finguard.local` / `finguard-dev`; project keys `pk-lf-finguard-dev` / `sk-lf-finguard-dev` |
 | Prometheus | observability | http://localhost:9090 | none |
 | Grafana | observability | http://localhost:3001 | anonymous admin |
 
