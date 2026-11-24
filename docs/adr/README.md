@@ -6,7 +6,7 @@ implemented, and keep this index in sync with the decision log in Notion.
 | ADR | Decision | Status |
 | --- | --- | --- |
 | 001 | Modular monolith codebase, hexagonal modules, multiple deployables | Accepted |
-| 002 | Kafka for events and agent tasks | Accepted |
+| [002](002-kafka-for-events-and-agent-tasks.md) | Kafka for events and agent tasks | Accepted |
 | 003 | LangGraph with a Postgres checkpointer for orchestration | Accepted |
 | 003b | Temporal for the case lifecycle, LangGraph inside activities | Planned |
 | 004 | Specialist agents as separate Kafka workers | Accepted |
