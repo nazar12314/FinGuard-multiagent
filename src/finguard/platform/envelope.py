@@ -7,13 +7,17 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, fie
 from finguard.platform.ids import new_id
 
 MESSAGE_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
-TRACEPARENT_PATTERN = r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
 
 
 class Envelope(BaseModel):
-    """Wrapper for every Kafka message. Consumers deduplicate on `id`."""
+    """Wrapper for every Kafka message.
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    Consumers deduplicate on `id`. Envelopes are keyed on it and never hashed, because
+    `data` is a plain dict. Unknown top-level fields are ignored, so the envelope can gain
+    fields without breaking consumers that haven't been upgraded yet.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     id: UUID = Field(default_factory=new_id)
     type: str = Field(pattern=MESSAGE_TYPE_PATTERN)
@@ -21,7 +25,9 @@ class Envelope(BaseModel):
     occurred_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     correlation_id: UUID
     causation_id: UUID | None = None
-    traceparent: str | None = Field(default=None, pattern=TRACEPARENT_PATTERN)
+    # Left unvalidated: the OpenTelemetry propagator parses it and drops invalid values,
+    # and a malformed trace header must never send a business message to the DLQ.
+    traceparent: str | None = None
     data: dict[str, JsonValue]
 
     @field_validator("occurred_at")
@@ -45,15 +51,24 @@ class Envelope(BaseModel):
             id=message_id,
             type=type,
             version=version,
-            correlation_id=correlation_id or message_id,
+            correlation_id=message_id if correlation_id is None else correlation_id,
             data=data,
         )
 
-    def follow_up(self, type: str, data: dict[str, JsonValue], *, version: int = 1) -> Self:
+    def follow_up(
+        self,
+        type: str,
+        data: dict[str, JsonValue],
+        *,
+        correlation_id: UUID | None = None,
+        version: int = 1,
+    ) -> Self:
+        # Pass correlation_id to re-scope the chain, e.g. to the case id once an alert
+        # opens a case; the causation link back to the alert is kept either way.
         return self.__class__(
             type=type,
             version=version,
-            correlation_id=self.correlation_id,
+            correlation_id=self.correlation_id if correlation_id is None else correlation_id,
             causation_id=self.id,
             data=data,
         )

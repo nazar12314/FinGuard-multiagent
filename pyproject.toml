@@ -51,6 +51,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "ASYNC", "PT", "TID
 
 [tool.mypy]
 strict = true
+plugins = ["pydantic.mypy"]
 python_version = "3.12"
 files = ["src", "tests"]
 mypy_path = "src"

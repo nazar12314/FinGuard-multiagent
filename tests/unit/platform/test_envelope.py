@@ -29,7 +29,7 @@ envelopes = st.builds(
     occurred_at=st.datetimes(timezones=st.just(UTC)),
     correlation_id=st.uuids(),
     causation_id=st.none() | st.uuids(),
-    traceparent=st.none() | st.just(TRACEPARENT),
+    traceparent=st.none() | st.just(TRACEPARENT) | st.text(),
     data=st.dictionaries(st.text(), json_values, max_size=5),
 )
 
@@ -64,6 +64,18 @@ def test_follow_up_keeps_correlation_and_points_at_its_cause() -> None:
     assert child.version == 2
 
 
+def test_follow_up_can_rescope_a_chain_to_the_case_it_opens() -> None:
+    transaction = Envelope.new("tx.raw.received", {"transaction_id": "t-1"})
+    alert = transaction.follow_up("alerts.alert.created", {"alert_id": "a-1"})
+    case_id = new_id()
+
+    case_opened = alert.follow_up("cases.case.opened", {}, correlation_id=case_id)
+
+    assert alert.correlation_id == transaction.id
+    assert case_opened.correlation_id == case_id
+    assert case_opened.causation_id == alert.id
+
+
 def test_occurred_at_is_normalised_to_utc() -> None:
     kyiv_noon = datetime(2026, 11, 24, 12, 0, tzinfo=timezone(timedelta(hours=2)))
 
@@ -82,17 +94,8 @@ def test_occurred_at_is_normalised_to_utc() -> None:
         {"type": "NotDotted"},
         {"type": "cases."},
         {"version": 0},
-        {"traceparent": "not-a-traceparent"},
-        {"unexpected_field": 1},
     ],
-    ids=[
-        "naive-datetime",
-        "undotted-type",
-        "empty-segment",
-        "zero-version",
-        "bad-traceparent",
-        "extra-field",
-    ],
+    ids=["naive-datetime", "undotted-type", "empty-segment", "zero-version"],
 )
 def test_rejects_invalid_envelopes(override: dict[str, Any]) -> None:
     fields: dict[str, Any] = {"type": "cases.case.opened", "correlation_id": new_id(), "data": {}}
@@ -101,11 +104,30 @@ def test_rejects_invalid_envelopes(override: dict[str, Any]) -> None:
         Envelope(**(fields | override))
 
 
+def test_malformed_traceparent_does_not_reject_the_message() -> None:
+    envelope = Envelope(
+        type="cases.case.opened",
+        correlation_id=new_id(),
+        traceparent="not-a-traceparent",
+        data={},
+    )
+
+    assert envelope.traceparent == "not-a-traceparent"
+
+
+def test_unknown_top_level_fields_from_newer_producers_are_ignored() -> None:
+    wire = Envelope.new("cases.case.opened", {}).model_dump(mode="json")
+
+    envelope = Envelope.model_validate(wire | {"producer": "cases"})
+
+    assert "producer" not in envelope.model_dump()
+
+
 def test_envelope_is_immutable() -> None:
     envelope = Envelope.new("cases.case.opened", {})
 
     with pytest.raises(ValidationError):
-        envelope.type = "cases.case.closed"
+        envelope.type = "cases.case.closed"  # type: ignore[misc]
 
 
 def test_wire_format_uses_the_documented_field_names() -> None:
