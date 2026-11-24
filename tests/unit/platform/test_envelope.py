@@ -127,7 +127,7 @@ def test_envelope_is_immutable() -> None:
     envelope = Envelope.new("cases.case.opened", {})
 
     with pytest.raises(ValidationError):
-        envelope.type = "cases.case.closed"
+        envelope.type = "cases.case.closed"  # type: ignore[misc]
 
 
 def test_wire_format_uses_the_documented_field_names() -> None:
