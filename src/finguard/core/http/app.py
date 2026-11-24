@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from importlib.metadata import version
 
 from fastapi import FastAPI
@@ -10,7 +10,7 @@ from finguard.core.http.middleware import RequestContextMiddleware
 from finguard.core.logging import LogEvent, get_logger
 from finguard.core.settings import Settings
 
-ContainerFactory = Callable[[Settings], Awaitable[Container]]
+ContainerFactory = Callable[[Settings, AsyncExitStack], Awaitable[Container]]
 
 logger = get_logger(__name__)
 
@@ -23,9 +23,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info(LogEvent.APP_STARTING, env=settings.env, version=app_version)
-        container = await container_factory(settings)
-        app.state.container = container
-        async with container.resources:  # closes clients in reverse order of opening
+        async with AsyncExitStack() as resources:  # closes clients in reverse order of opening
+            app.state.container = await container_factory(settings, resources)
             yield
         logger.info(LogEvent.APP_STOPPED)
 

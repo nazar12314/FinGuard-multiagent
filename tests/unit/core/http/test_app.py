@@ -1,9 +1,13 @@
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import AsyncExitStack
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
+from finguard.core.container import Container, build_api_container
 from finguard.core.http.app import create_app
 from finguard.core.http.dependencies import CurrentPrincipal
 from finguard.core.settings import Environment, Settings
@@ -16,6 +20,8 @@ from finguard.platform.errors import (
 
 USER_ID = "0196d5a0-0000-7000-8000-000000000001"
 
+LogLines = Callable[[], list[dict[str, Any]]]
+
 
 class DuplicateDecision(Conflict):
     code = "duplicate_decision"
@@ -23,6 +29,18 @@ class DuplicateDecision(Conflict):
 
 def build_app(settings: Settings) -> FastAPI:
     app = create_app(settings)
+
+    @app.get("/ok")
+    async def ok() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/broken-stream")
+    async def broken_stream() -> StreamingResponse:
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"partial"
+            raise RuntimeError("stream broke")
+
+        return StreamingResponse(chunks())
 
     @app.get("/missing")
     async def missing() -> None:
@@ -124,3 +142,80 @@ def test_openapi_docs_are_hidden_in_prod(env: Environment, docs_status: int) -> 
     with TestClient(create_app(Settings.model_construct(env=env))) as client:
         assert client.get("/docs").status_code == docs_status
         assert client.get("/openapi.json").status_code == docs_status
+
+
+def test_successful_responses_carry_a_request_id(client: TestClient) -> None:
+    response = client.get("/ok")
+
+    assert response.status_code == 200
+    assert len(response.headers["X-Request-ID"]) == 32
+
+
+def test_each_request_is_logged_once_with_its_outcome(
+    log_lines: LogLines, client: TestClient
+) -> None:
+    response = client.get("/missing")
+
+    completed = [line for line in log_lines() if line["event"] == "http.request.completed"]
+    assert len(completed) == 1
+    assert completed[0]["request_id"] == response.headers["X-Request-ID"]
+    assert completed[0]["method"] == "GET"
+    assert completed[0]["path"] == "/missing"
+    assert completed[0]["status"] == 404
+    assert completed[0]["duration_ms"] >= 0
+
+
+def test_a_response_that_fails_mid_stream_is_logged_as_failed(
+    log_lines: LogLines, client: TestClient
+) -> None:
+    client.get("/broken-stream")
+
+    completed = next(line for line in log_lines() if line["event"] == "http.request.completed")
+    assert completed["status"] == 500
+
+
+@pytest.mark.parametrize(
+    ("path", "level", "has_traceback"),
+    [("/unmapped", "error", True), ("/database-down", "warning", False)],
+)
+def test_server_side_application_errors_are_logged(
+    log_lines: LogLines, client: TestClient, path: str, level: str, has_traceback: bool
+) -> None:
+    client.get(path)
+
+    logged = next(line for line in log_lines() if line["event"] == "http.server_error")
+    assert logged["level"] == level
+    assert ("exception" in logged) is has_traceback
+
+
+class FakeClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_clients_opened_at_startup_are_closed_on_shutdown() -> None:
+    kafka = FakeClient()
+
+    async def factory(settings: Settings, resources: AsyncExitStack) -> Container:
+        resources.push_async_callback(kafka.aclose)
+        return await build_api_container(settings, resources)
+
+    with TestClient(create_app(Settings(env="test"), container_factory=factory)):
+        assert not kafka.closed
+    assert kafka.closed
+
+
+def test_clients_opened_before_a_startup_failure_are_closed() -> None:
+    kafka = FakeClient()
+
+    async def factory(settings: Settings, resources: AsyncExitStack) -> Container:
+        resources.push_async_callback(kafka.aclose)
+        raise DependencyUnavailable("database unavailable")
+
+    app = create_app(Settings(env="test"), container_factory=factory)
+    with pytest.raises(DependencyUnavailable), TestClient(app):
+        pass
+    assert kafka.closed
