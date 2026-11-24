@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+.env
+.env.*
+!.env.example
+
+.idea/
+.vscode/
+.DS_Store
+
+# local data, model artifacts and generated datasets
+data/
+mlruns/
+*.parquet
+evals/reports/*
+!evals/reports/.gitkeep

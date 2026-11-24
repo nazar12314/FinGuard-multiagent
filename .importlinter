@@ -1,0 +1,53 @@
+[importlinter]
+root_package = finguard
+
+[importlinter:contract:top-level-layers]
+name = Top-level layers point inward
+type = layers
+layers =
+    finguard.entrypoints
+    finguard.core
+    finguard.modules
+    finguard.infrastructure
+    finguard.platform
+
+[importlinter:contract:module-layers]
+name = Module layers point inward
+type = layers
+containers =
+    finguard.modules.ingestion
+    finguard.modules.detection
+    finguard.modules.cases
+    finguard.modules.investigation
+    finguard.modules.screening
+    finguard.modules.graph
+    finguard.modules.documents
+    finguard.modules.customers
+layers =
+    api | (consumers) | adapters
+    service
+    ports
+    domain
+
+[importlinter:contract:module-independence]
+name = Modules talk via ports and events only
+type = independence
+modules =
+    finguard.modules.ingestion
+    finguard.modules.detection
+    finguard.modules.cases
+    finguard.modules.investigation
+    finguard.modules.screening
+    finguard.modules.graph
+    finguard.modules.documents
+    finguard.modules.customers
+
+[importlinter:contract:core-free-of-infrastructure]
+name = Domain, ports and services stay free of infrastructure
+type = forbidden
+source_modules =
+    finguard.modules.*.domain
+    finguard.modules.*.ports
+    finguard.modules.*.service
+forbidden_modules =
+    finguard.infrastructure

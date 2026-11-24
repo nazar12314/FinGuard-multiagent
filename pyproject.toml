@@ -1,0 +1,59 @@
+[project]
+name = "finguard"
+version = "0.1.0"
+description = "Multi-agent AML investigation platform for a simulated EU neobank"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "import-linter",
+    "mypy",
+    "pre-commit",
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "ASYNC", "PT", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"sqlalchemy".msg = "Infrastructure import: use a port, implement it in adapters/"
+"aiokafka".msg = "Infrastructure import: use a port, implement it in adapters/"
+"neo4j".msg = "Infrastructure import: use a port, implement it in adapters/"
+"langgraph".msg = "Infrastructure import: use a port, implement it in adapters/"
+"openai".msg = "Vendor SDK: go through the LlmGateway port"
+"anthropic".msg = "Vendor SDK: go through the LlmGateway port"
+
+[tool.ruff.lint.per-file-ignores]
+# Only the outer rings may touch infrastructure libraries and vendor SDKs.
+"src/finguard/modules/*/adapters/**" = ["TID251"]
+"src/finguard/infrastructure/**" = ["TID251"]
+"src/finguard/entrypoints/**" = ["TID251"]
+"src/finguard/core/**" = ["TID251"]
+"tests/integration/**" = ["TID251"]
+"tests/e2e/**" = ["TID251"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+mypy_path = "src"
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "-ra"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
