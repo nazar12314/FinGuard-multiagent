@@ -74,38 +74,39 @@ uv run finguard-outbox-relay
 FINGUARD_KAFKA__RETRY_DELAYS_S='[5, 10]' uv run finguard-ping-consumer
 ```
 
-Send pings and follow them:
+Send pings and follow them. The routes need a caller, which the dev auth stub takes from the `X-Dev-User-Id` header
+(any UUID):
 
 ```bash
-curl -s -X POST localhost:8000/api/v1/dev/pings -H 'Content-Type: application/json' -d '{}'
-curl -s -X POST localhost:8000/api/v1/dev/pings -H 'Content-Type: application/json' \
+CALLER='X-Dev-User-Id: 0196d5a0-0000-7000-8000-000000000001'
+curl -s -X POST localhost:8000/api/v1/dev/pings -H "$CALLER" -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST localhost:8000/api/v1/dev/pings -H "$CALLER" -H 'Content-Type: application/json' \
   -d '{"fail": "transient", "times": 4}'
-curl -s -X POST localhost:8000/api/v1/dev/pings -H 'Content-Type: application/json' \
+curl -s -X POST localhost:8000/api/v1/dev/pings -H "$CALLER" -H 'Content-Type: application/json' \
   -d '{"fail": "permanent"}'
-curl -s localhost:8000/api/v1/dev/pings/<ping_id>
+curl -s -H "$CALLER" localhost:8000/api/v1/dev/pings/<ping_id>
 ```
 
-The status shows where the ping is and every attempt so far:
+The status reports what has been recorded, together with every attempt so far:
 
 | Status | Meaning |
 | --- | --- |
 | `queued` | In the outbox; the relay hasn't published it yet |
 | `published` | In Kafka, not handled yet |
-| `retrying` | Failed; `topic` shows whether it's retried in place (`diagnostics.pings`) or waits on a retry topic |
+| `failing` | At least one attempt failed, and it hasn't been handled yet |
 | `handled` | The consumer handled it and recorded it in the inbox |
-| `dead_lettered` | Failed permanently, or on every retry topic; it's on `diagnostics.pings.dlq` |
+| `dead_lettered` | It failed permanently, so the consumer sent it to `diagnostics.pings.dlq` |
 | `parked` | Kafka refused it for good, so the relay set it aside |
 
 A ping with `"times": 4` fails three times in place, waits 5 s on `diagnostics.pings.retry.1`, fails once more there
-and then succeeds. The consumer's log shows each `consumer.handler_failed` and the `consumer.retry_scheduled` move.
+and then succeeds. Which retry topic a failing ping waits on, and whether it ran out of retries, is in the consumer's
+log (`consumer.handler_failed`, `consumer.retry_scheduled`, `consumer.dead_lettered`) and on the topics themselves.
 To read the dead-letter topic with its error headers:
 
 ```bash
 docker exec finguard-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:19092 \
   --topic diagnostics.pings.dlq --from-beginning --timeout-ms 5000 --formatter-property print.headers=true
 ```
-
-The status endpoint assumes the API runs with the same retry settings as the consumer.
 
 ## Repository layout
 

@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterator
+import json
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -22,6 +23,8 @@ from finguard.infrastructure.outbox.relay import OutboxRelay
 from finguard.platform.topics import DIAGNOSTICS_PINGS
 
 SessionFactory = async_sessionmaker[AsyncSession]
+ReadTopic = Callable[..., Awaitable[list[Any]]]
+CALLER = {"X-Dev-User-Id": "0196d5a0-0000-7000-8000-000000000001"}
 
 
 @pytest.fixture
@@ -42,7 +45,7 @@ async def settings(database_url: str, kafka_bootstrap_servers: str) -> Settings:
 
 @pytest.fixture
 def api(settings: Settings, session_factory: SessionFactory) -> Iterator[TestClient]:
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings), headers=CALLER) as client:
         yield client
 
 
@@ -90,8 +93,13 @@ async def consume_until(settings: Settings, done: Callable[[], bool]) -> None:
 
 
 async def send_and_follow(
-    api: TestClient, relay: OutboxRelay, settings: Settings, body: dict[str, Any], final: str
-) -> dict[str, Any]:
+    api: TestClient,
+    relay: OutboxRelay,
+    settings: Settings,
+    body: dict[str, Any],
+    done: Callable[[dict[str, Any]], bool],
+) -> tuple[dict[str, Any], list[str]]:
+    """Send a ping, publish it and consume until `done(status)`. Also return the states seen."""
     accepted = api.post("/api/v1/dev/pings", json=body)
     assert accepted.status_code == 202
     ping_id = accepted.json()["ping_id"]
@@ -100,48 +108,87 @@ async def send_and_follow(
     assert await relay.publish_pending() == 1
     assert status_of(api, ping_id)["status"] == "published"
 
-    await consume_until(settings, lambda: status_of(api, ping_id)["status"] == final)
-    return status_of(api, ping_id)
+    seen: list[str] = []
+
+    def reached() -> bool:
+        status = status_of(api, ping_id)
+        if not seen or seen[-1] != status["status"]:
+            seen.append(status["status"])
+        return done(status)
+
+    await consume_until(settings, reached)
+    return status_of(api, ping_id), seen
+
+
+def has_status(name: str) -> Callable[[dict[str, Any]], bool]:
+    return lambda status: bool(status["status"] == name)
 
 
 async def test_a_ping_travels_from_the_api_through_kafka_to_its_consumer(
     api: TestClient, relay: OutboxRelay, settings: Settings
 ) -> None:
-    status = await send_and_follow(api, relay, settings, {}, "handled")
+    status, _ = await send_and_follow(api, relay, settings, {}, has_status("handled"))
 
-    assert status["topic"] is None
     assert [attempt["error"] for attempt in status["attempts"]] == [None]
 
 
 async def test_a_ping_that_fails_transiently_recovers_on_a_retry_topic(
     api: TestClient, relay: OutboxRelay, settings: Settings
 ) -> None:
-    status = await send_and_follow(
-        api, relay, settings, {"fail": "transient", "times": 2}, "handled"
+    status, seen = await send_and_follow(
+        api, relay, settings, {"fail": "transient", "times": 2}, has_status("handled")
     )
 
     errors = [attempt["error"] for attempt in status["attempts"]]
     assert errors == ["asked to fail 2 time(s)", "asked to fail 2 time(s)", None]
+    assert "failing" in seen
+
+
+async def test_in_place_retries_and_retry_topics_both_count_towards_the_failures(
+    api: TestClient, relay: OutboxRelay, settings: Settings
+) -> None:
+    # Two attempts per topic: two failures in place, then one failure and a success on the
+    # first retry topic.
+    two_attempts = settings.model_copy(
+        update={"consumer": ConsumerSettings(attempts=2, attempt_backoff_s=0.01)}
+    )
+
+    status, seen = await send_and_follow(
+        api, relay, two_attempts, {"fail": "transient", "times": 3}, has_status("handled")
+    )
+
+    errors = [attempt["error"] for attempt in status["attempts"]]
+    assert errors == ["asked to fail 3 time(s)"] * 3 + [None]
+    assert seen[0] in ("published", "failing")
+    assert seen[-2:] == ["failing", "handled"]
 
 
 async def test_a_ping_that_fails_permanently_is_dead_lettered(
     api: TestClient, relay: OutboxRelay, settings: Settings
 ) -> None:
-    status = await send_and_follow(api, relay, settings, {"fail": "permanent"}, "dead_lettered")
+    status, _ = await send_and_follow(
+        api, relay, settings, {"fail": "permanent"}, has_status("dead_lettered")
+    )
 
-    assert status["topic"] == "diagnostics.pings.dlq"
     assert len(status["attempts"]) == 1
 
 
-async def test_a_ping_that_outlasts_every_retry_tier_is_dead_lettered(
-    api: TestClient, relay: OutboxRelay, settings: Settings
+async def test_a_ping_that_outlasts_every_retry_topic_reaches_the_dead_letter_topic(
+    api: TestClient, relay: OutboxRelay, settings: Settings, read_topic: ReadTopic
 ) -> None:
-    # One attempt on the source topic and one on each of the two retry tiers.
-    status = await send_and_follow(
-        api, relay, settings, {"fail": "transient", "times": 5}, "dead_lettered"
+    # One attempt on the source topic and one on each of the two retry topics.
+    status, _ = await send_and_follow(
+        api,
+        relay,
+        settings,
+        {"fail": "transient", "times": 5},
+        lambda status: len(status["attempts"]) == 3,
     )
 
-    assert len(status["attempts"]) == 3
+    # The status only reports what was recorded; the dead-letter topic holds the copy.
+    assert status["status"] == "failing"
+    dead = await read_topic("diagnostics.pings.dlq", 50, timeout_s=3)
+    assert status["ping_id"] in {json.loads(record.value)["id"] for record in dead}
 
 
 def test_an_unknown_ping_is_not_found(api: TestClient) -> None:
@@ -151,7 +198,19 @@ def test_an_unknown_ping_is_not_found(api: TestClient) -> None:
     assert response.json()["error"]["code"] == "not_found"
 
 
-def test_a_ping_asking_for_too_many_failures_is_rejected(api: TestClient) -> None:
-    response = api.post("/api/v1/dev/pings", json={"fail": "transient", "times": 99})
+@pytest.mark.parametrize(
+    "body",
+    [{"fail": "transient", "times": 99}, {"fail": "sometimes"}, {"fail": "transient", "tims": 4}],
+    ids=["too-many-failures", "unknown-mode", "misspelt-field"],
+)
+def test_an_invalid_ping_is_rejected(api: TestClient, body: dict[str, Any]) -> None:
+    response = api.post("/api/v1/dev/pings", json=body)
 
     assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_failed"
+
+
+def test_pings_need_an_authenticated_caller(api: TestClient) -> None:
+    response = api.post("/api/v1/dev/pings", json={}, headers={"X-Dev-User-Id": ""})
+
+    assert response.status_code == 401
