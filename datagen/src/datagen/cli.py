@@ -7,6 +7,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 from datagen.amlworld import AmlworldFormatError, canonical_bank_id
+from datagen.media_corpus import CORPUS, ClaudeWriter, briefs, read_corpus, write_corpus
 from datagen.replay import ONE_DAY_PER_MINUTE, Booking, Pace, bookings, replay
 from datagen.world import WorldConfig, build_world, world_dir
 from finguard.core.settings import KafkaSettings
@@ -61,6 +62,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             "FINGUARD_KAFKA__BOOTSTRAP_SERVERS", KafkaSettings().bootstrap_servers
         ),
     )
+    commands.add_parser(
+        "media",
+        help="write the fictional adverse-media corpus with Claude (once; the result is committed)",
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -69,6 +74,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 _build(arguments)
             case "replay":
                 _replay(arguments)
+            case "media":
+                _media()
     except (FileNotFoundError, AmlworldFormatError) as error:
         sys.exit(f"finguard-datagen: {error}")
 
@@ -84,6 +91,16 @@ def _build(arguments: argparse.Namespace) -> None:
     world = build_world(config, arguments.raw_dir, arguments.worlds_dir)
     counts = json.loads((world / "manifest.json").read_text())["counts"]
     print(f"built {world}: " + ", ".join(f"{name} {value}" for name, value in counts.items()))
+    if not read_corpus():
+        print(f"note: no adverse-media corpus at {CORPUS}; run `finguard-datagen media` once")
+
+
+def _media() -> None:
+    written = asyncio.run(write_corpus(ClaudeWriter()))
+    total, done = len(briefs()), len(read_corpus())
+    print(f"wrote {written} articles; the corpus has {done} of {total} at {CORPUS}")
+    if done < total:
+        sys.exit("finguard-datagen: some briefs failed; run `media` again to retry them")
 
 
 def _replay(arguments: argparse.Namespace) -> None:

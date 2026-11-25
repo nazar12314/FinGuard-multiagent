@@ -69,6 +69,7 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "customers": 2,
         "laundering_linked_customers": 1,
         "documents": manifest["counts"]["documents"],
+        "media_articles": manifest["counts"]["media_articles"],
     }
 
 

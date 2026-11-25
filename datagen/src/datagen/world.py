@@ -23,6 +23,8 @@ from datagen.documents.content import document_specs, sample_customers
 from datagen.documents.render import write_documents
 from datagen.fx import EUR_PER_UNIT
 from datagen.ground_truth import build_ground_truth, patterns_file, read_attempts
+from datagen.media import assign_media
+from datagen.media_corpus import read_corpus
 from datagen.near_matches import opensanctions_files, plant_near_matches, read_listed
 
 
@@ -111,6 +113,10 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
     if staging.exists():
         shutil.rmtree(staging)
     (staging / "ground_truth").mkdir(parents=True)
+    (staging / "media").mkdir()
+    media = assign_media(files, read_corpus(), first_booking.date(), config.seed)
+    files["media/articles.parquet"] = media.articles
+    files["ground_truth/media_labels.parquet"] = media.labels
     sample = (
         sample_customers(customers.labels, companies.labels, config.document_sample, config.seed)
         if config.documents
@@ -214,6 +220,7 @@ def world_manifest(
                 customer_labels.get_column("laundering_linked").sum()
             ),
             "documents": files["documents.parquet"].height,
+            "media_articles": files["media/articles.parquet"].height,
         },
     }
 
