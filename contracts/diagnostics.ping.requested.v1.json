@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "PingRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "fail": {
+          "default": "never",
+          "enum": [
+            "never",
+            "transient",
+            "permanent"
+          ],
+          "title": "Fail",
+          "type": "string"
+        },
+        "times": {
+          "default": 1,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Times",
+          "type": "integer"
+        }
+      },
+      "title": "PingRequest",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "causation_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Causation Id"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "data": {
+      "$ref": "#/$defs/PingRequest"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "traceparent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Traceparent"
+    },
+    "type": {
+      "const": "diagnostics.ping.requested",
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "version",
+    "occurred_at",
+    "correlation_id",
+    "causation_id",
+    "traceparent",
+    "data"
+  ],
+  "title": "diagnostics.ping.requested.v1",
+  "type": "object"
+}

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from finguard.infrastructure.db.metadata import metadata
 from finguard.infrastructure.kafka.consumer import MessageHandler
 from finguard.infrastructure.outbox.tables import inbox, outbox
+from finguard.platform.contracts import MessageContract
 from finguard.platform.envelope import Envelope
 from finguard.platform.errors import DependencyUnavailable, ValidationFailed
 
@@ -50,6 +51,9 @@ class PingRequest(BaseModel):
     fail: Literal["never", "transient", "permanent"] = "never"
     # For transient failures: how many handling attempts fail before one succeeds.
     times: int = Field(default=1, ge=1, le=20)
+
+
+PING_REQUESTED_CONTRACT = MessageContract(message_type=PING_REQUESTED, version=1, data=PingRequest)
 
 
 class PingAttempt(BaseModel):
