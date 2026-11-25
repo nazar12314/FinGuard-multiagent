@@ -64,8 +64,8 @@ def test_turns_transactions_into_booked_messages(tmp_path: Path) -> None:
     booked = TransactionBooked.model_validate(envelope.data)
     assert booked.transaction_id == "tx-000000000"
     assert booked.booked_at == datetime(2022, 9, 1, 10, 0, tzinfo=UTC)
-    assert (booked.from_account.bank_id, booked.from_account.account_number) == (OUR_BANK, "C1")
-    assert (booked.to_account.bank_id, booked.to_account.account_number) == ("002", "B1")
+    assert (booked.from_account.bank_id, booked.from_account.account_number) == ("12", "C1")
+    assert (booked.to_account.bank_id, booked.to_account.account_number) == ("2", "B1")
     assert (str(booked.amount_paid.amount), booked.amount_paid.currency) == ("12.500000", "JPY")
     assert booked.payment_format == "wire"
 
@@ -82,7 +82,7 @@ def test_keys_each_message_by_our_customers_account(tmp_path: Path) -> None:
 
     keys = [b.message.key for b in bookings(world)]
 
-    assert keys == ["012:OUT", "012:IN", "012:FROM"]
+    assert keys == ["12:OUT", "12:IN", "12:FROM"]
 
 
 def test_streams_in_booking_order_and_honours_the_limit(tmp_path: Path) -> None:
@@ -94,8 +94,8 @@ def test_streams_in_booking_order_and_honours_the_limit(tmp_path: Path) -> None:
         ],
     )
 
-    assert [b.message.key for b in bookings(world)] == ["012:EARLY", "012:LATE"]
-    assert [b.message.key for b in bookings(world, limit=1)] == ["012:EARLY"]
+    assert [b.message.key for b in bookings(world)] == ["12:EARLY", "12:LATE"]
+    assert [b.message.key for b in bookings(world, limit=1)] == ["12:EARLY"]
 
 
 def test_needs_a_built_world(tmp_path: Path) -> None:

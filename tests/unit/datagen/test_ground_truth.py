@@ -99,14 +99,14 @@ def test_keeps_attempts_that_reach_our_bank_with_the_part_we_see(truth: GroundTr
 def test_labels_every_account_with_its_laundering_and_attempts(truth: GroundTruth) -> None:
     labels = {row[0]: row[1:] for row in truth.account_labels.rows()}
 
-    assert labels["012:M1"] == (2, ["attempt-00001"])
-    assert labels["002:X1"] == (2, ["attempt-00001"])
-    assert labels["012:L1"] == (1, [])
-    assert labels["012:C1"] == (0, [])
+    assert labels["12:M1"] == (2, ["attempt-00001"])
+    assert labels["2:X1"] == (2, ["attempt-00001"])
+    assert labels["12:L1"] == (1, [])
+    assert labels["12:C1"] == (0, [])
 
 
 def test_rejects_an_attempt_transaction_missing_from_the_csv(tmp_path: Path) -> None:
-    with pytest.raises(AmlworldFormatError, match="1 pattern-file transactions of bank 012"):
+    with pytest.raises(AmlworldFormatError, match="1 pattern-file transactions of bank 12"):
         ground_truth(tmp_path, [NORMAL], [attempt("FAN-OUT", FAN_OUT[:1])])
 
 

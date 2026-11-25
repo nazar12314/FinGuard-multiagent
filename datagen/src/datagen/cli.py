@@ -6,7 +6,7 @@ import sys
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
-from datagen.amlworld import AmlworldFormatError
+from datagen.amlworld import AmlworldFormatError, canonical_bank_id
 from datagen.replay import ONE_DAY_PER_MINUTE, Booking, Pace, bookings, replay
 from datagen.world import WorldConfig, build_world, world_dir
 from finguard.core.settings import KafkaSettings
@@ -24,7 +24,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     build = commands.add_parser("build", parents=[world], help="build a seeded world")
     build.add_argument("--variant", default="HI-Small", help="AMLworld variant, e.g. HI-Small")
-    build.add_argument("--our-bank", default="012", help="AMLworld bank id that plays FinGuard")
+    build.add_argument("--our-bank", default="12", help="AMLworld bank id that plays FinGuard")
     build.add_argument("--raw-dir", type=Path, default=Path("data/raw/amlworld"))
 
     replay_command = commands.add_parser(
@@ -58,7 +58,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 def _build(arguments: argparse.Namespace) -> None:
     config = WorldConfig(
-        seed=arguments.seed, amlworld_variant=arguments.variant, our_bank=arguments.our_bank
+        seed=arguments.seed,
+        amlworld_variant=arguments.variant,
+        our_bank=canonical_bank_id(arguments.our_bank),
     )
     world = build_world(config, arguments.raw_dir, arguments.worlds_dir)
     counts = json.loads((world / "manifest.json").read_text())["counts"]

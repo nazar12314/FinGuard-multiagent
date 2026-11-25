@@ -49,6 +49,6 @@ async def test_replays_a_world_into_tx_raw(
         for record in records
     )
     assert received == [
-        ("tx-000000000", b"012:C1"),
-        ("tx-000000001", b"012:C2"),
+        ("tx-000000000", b"12:C1"),
+        ("tx-000000001", b"12:C2"),
     ]

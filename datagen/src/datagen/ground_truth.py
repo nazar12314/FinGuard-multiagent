@@ -4,7 +4,13 @@ from pathlib import Path
 
 import polars as pl
 
-from datagen.amlworld import CSV_SCHEMA, AmlworldFormatError, touches_bank
+from datagen.amlworld import (
+    CSV_SCHEMA,
+    AmlworldFormatError,
+    bank_id,
+    canonical_bank_id,
+    touches_bank,
+)
 
 PATTERN_TYPES = {
     "BIPARTITE": "bipartite",
@@ -75,14 +81,17 @@ def read_attempts(path: Path) -> pl.DataFrame:
             rows.append((*attempt, *values))
     if attempt is not None:
         raise AmlworldFormatError(f"{path.name}: {attempt[0]} never ends")
-    return pl.DataFrame(rows, schema=ATTEMPT_ROW_SCHEMA, orient="row")
+    return pl.DataFrame(rows, schema=ATTEMPT_ROW_SCHEMA, orient="row").with_columns(
+        from_bank=bank_id(pl.col("from_bank")), to_bank=bank_id(pl.col("to_bank"))
+    )
 
 
 def build_ground_truth(
     bank_rows: pl.DataFrame, attempt_rows: pl.DataFrame, our_bank: str
 ) -> GroundTruth:
     # The pattern file has no transaction ids, so its rows are matched to the CSV rows by their
-    # exact text, which is why both frames keep the CSV columns as strings.
+    # exact text (bank ids aside, which both readers strip of padding), which is why both frames
+    # keep the CSV columns as strings.
     ours = attempt_rows.filter(touches_bank(our_bank))
     matched = ours.join(
         bank_rows.select(*CSV_SCHEMA, "transaction_id"), on=list(CSV_SCHEMA), how="left"
@@ -91,7 +100,8 @@ def build_ground_truth(
         raise AmlworldFormatError("a pattern-file transaction matches more than one CSV row")
     if unmatched := matched.filter(pl.col("transaction_id").is_null()).height:
         raise AmlworldFormatError(
-            f"{unmatched} pattern-file transactions of bank {our_bank} match no laundering row "
+            f"{unmatched} pattern-file transactions of bank {canonical_bank_id(our_bank)} match "
+            "no laundering row "
             "in the CSV"
         )
     if matched.get_column("transaction_id").is_duplicated().any():

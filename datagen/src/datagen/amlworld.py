@@ -78,12 +78,25 @@ def transaction_id(row: pl.Expr) -> pl.Expr:
     return pl.format("tx-{}", row.cast(pl.String).str.zfill(9))
 
 
+def canonical_bank_id(bank: str) -> str:
+    if not bank.isdigit():
+        raise AmlworldFormatError(f"bank ids are numbers, got {bank!r}")
+    return str(int(bank))
+
+
+def bank_id(bank: pl.Expr) -> pl.Expr:
+    # The CSV pads one bank's id with varying zeros ("012" and "0012" are both bank 12, as the
+    # accounts file confirms), so ids are compared and stored without the padding.
+    return bank.cast(pl.Int64).cast(pl.String)
+
+
 def account_id(bank: pl.Expr, account: pl.Expr) -> pl.Expr:
     # Account numbers repeat across banks, so an account is only unique together with its bank.
     return pl.format("{}:{}", bank, account)
 
 
 def touches_bank(bank: str) -> pl.Expr:
+    bank = canonical_bank_id(bank)
     return (pl.col("from_bank") == bank) | (pl.col("to_bank") == bank)
 
 
@@ -102,11 +115,14 @@ def read_bank_rows(csv_path: Path, our_bank: str) -> pl.DataFrame:
             csv_path, has_header=True, new_columns=list(CSV_SCHEMA), schema_overrides=CSV_SCHEMA
         )
         .with_row_index("row")
+        .with_columns(from_bank=bank_id(pl.col("from_bank")), to_bank=bank_id(pl.col("to_bank")))
         .filter(touches_bank(our_bank))
         .collect()
     )
     if rows.is_empty():
-        raise AmlworldFormatError(f"bank {our_bank} has no transactions in {csv_path.name}")
+        raise AmlworldFormatError(
+            f"bank {canonical_bank_id(our_bank)} has no transactions in {csv_path.name}"
+        )
     _reject_unknown(rows, ["payment_currency", "receiving_currency"], CURRENCY_CODES)
     _reject_unknown(rows, ["payment_format"], PAYMENT_FORMATS)
     _reject_unknown(rows, ["is_laundering"], {"0", "1"})
@@ -150,7 +166,7 @@ def map_bank_slice(rows: pl.DataFrame, our_bank: str) -> BankSlice:
             ]
         )
         .unique()
-        .with_columns(held_at_our_bank=pl.col("bank_id") == our_bank)
+        .with_columns(held_at_our_bank=pl.col("bank_id") == canonical_bank_id(our_bank))
         .sort("account_id")
     )
     return BankSlice(transactions=transactions, accounts=accounts)
