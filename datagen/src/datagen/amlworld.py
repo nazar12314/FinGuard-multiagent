@@ -79,6 +79,18 @@ def transaction_id(row: pl.Expr) -> pl.Expr:
     return pl.format("tx-{}", row.cast(pl.String).str.zfill(9))
 
 
+def canonical_bank_id(bank: str) -> str:
+    if not bank.isdigit():
+        raise AmlworldFormatError(f"bank ids are numbers, got {bank!r}")
+    return str(int(bank))
+
+
+def bank_id(bank: pl.Expr) -> pl.Expr:
+    # The CSV pads one bank's id with varying zeros ("012" and "0012" are both bank 12, as the
+    # accounts file confirms), so ids are compared and stored without the padding.
+    return bank.cast(pl.Int64).cast(pl.String)
+
+
 def account_id(bank: pl.Expr, account: pl.Expr) -> pl.Expr:
     # Account numbers repeat across banks, so an account is only unique together with its bank.
     return pl.format("{}:{}", bank, account)
@@ -99,8 +111,10 @@ def read_rows(csv_path: Path) -> pl.LazyFrame:
 
 
 def load_bank_slice(csv_path: Path, our_bank: str) -> BankSlice:
+    our_bank = canonical_bank_id(our_bank)
     rows = (
         read_rows(csv_path)
+        .with_columns(from_bank=bank_id(pl.col("from_bank")), to_bank=bank_id(pl.col("to_bank")))
         .filter((pl.col("from_bank") == our_bank) | (pl.col("to_bank") == our_bank))
         .collect()
     )

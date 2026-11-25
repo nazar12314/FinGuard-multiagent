@@ -13,7 +13,7 @@ from datagen.fx import EUR_PER_UNIT
 class WorldConfig:
     seed: int
     amlworld_variant: str = "HI-Small"
-    our_bank: str = "012"
+    our_bank: str = "12"
 
 
 def world_dir(worlds_dir: Path, seed: int) -> Path:

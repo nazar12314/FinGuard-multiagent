@@ -31,7 +31,7 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
     assert pl.read_parquet(world / "ground_truth" / "transaction_labels.parquet").height == 2
     manifest = json.loads((world / "manifest.json").read_text())
     assert manifest["seed"] == 7
-    assert manifest["our_bank"] == OUR_BANK
+    assert manifest["our_bank"] == "12"
     assert manifest["fx_eur_per_unit"]["JPY"] == "0.007"
     assert manifest["counts"] == {
         "transactions": 2,
