@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finguard.infrastructure.outbox.tables import inbox, outbox
+from finguard.infrastructure.tracing import current_traceparent
 from finguard.platform.envelope import Envelope
 from finguard.platform.errors import ValidationFailed
 from finguard.platform.topics import TOPIC_NAMES
@@ -38,13 +39,12 @@ class PostgresOutbox:
             raise ValidationFailed(
                 f"message {envelope.id} is {size} bytes, over the {self._max_message_bytes} limit"
             )
+        payload = envelope.model_dump(mode="json")
+        # The relay continues this trace when it publishes, however much later that is.
+        if payload["traceparent"] is None:
+            payload["traceparent"] = current_traceparent()
         await self._session.execute(
-            insert(outbox).values(
-                id=envelope.id,
-                destination=topic,
-                key=key,
-                payload=envelope.model_dump(mode="json"),
-            )
+            insert(outbox).values(id=envelope.id, destination=topic, key=key, payload=payload)
         )
 
 

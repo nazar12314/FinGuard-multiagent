@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import pytest
 from aiokafka.admin import NewTopic
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind, StatusCode
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,6 +21,7 @@ from finguard.infrastructure.kafka.publisher import (
 from finguard.infrastructure.outbox.postgres import PostgresOutbox
 from finguard.infrastructure.outbox.relay import RELAY_LOCK_ID, MessageParked, OutboxRelay
 from finguard.infrastructure.outbox.tables import outbox
+from finguard.infrastructure.tracing import tracer
 from finguard.platform.envelope import Envelope
 from finguard.platform.errors import ValidationFailed
 
@@ -92,6 +95,12 @@ async def pending_count(session_factory: SessionFactory) -> int:
         return count or 0
 
 
+def ids(traceparent: str) -> tuple[int, int]:
+    """The trace and parent span ids of a W3C traceparent; its flags vary by SDK."""
+    _, trace_id, span_id, _ = traceparent.split("-")
+    return int(trace_id, 16), int(span_id, 16)
+
+
 def new_envelope(index: int = 0) -> Envelope:
     return Envelope.new("cases.case.opened", {"index": index})
 
@@ -106,7 +115,7 @@ async def test_a_committed_message_is_published_once_with_its_key_and_trace(
     read_topic: ReadTopic,
     topic: str,
 ) -> None:
-    envelope = new_envelope().model_copy(update={"traceparent": TRACEPARENT})
+    envelope = Envelope.new("cases.case.opened", {"index": 0}, traceparent=TRACEPARENT)
     await write(session_factory, topic, envelope)
     relay = relay_for(session_factory, publisher)
 
@@ -116,7 +125,8 @@ async def test_a_committed_message_is_published_once_with_its_key_and_trace(
     [record] = await read_topic(topic, 1)
     assert record.key == b"case-1"
     assert json.loads(record.value) == envelope.model_dump(mode="json")
-    assert ("traceparent", TRACEPARENT.encode()) in record.headers
+    # Same trace as the writer; the span id is the relay's publish span.
+    assert ids(dict(record.headers)["traceparent"].decode())[0] == ids(TRACEPARENT)[0]
     assert await pending_count(session_factory) == 0
 
 
@@ -211,7 +221,7 @@ async def test_messages_stay_pending_when_publishing_fails(
 
 
 async def test_a_publish_that_hangs_times_out_and_leaves_messages_pending(
-    session_factory: SessionFactory, topic: str
+    session_factory: SessionFactory, topic: str, spans: InMemorySpanExporter
 ) -> None:
     await write(session_factory, topic, new_envelope(), key="slow")
 
@@ -221,6 +231,8 @@ async def test_a_publish_that_hangs_times_out_and_leaves_messages_pending(
         ).publish_pending()
 
     assert await pending_count(session_factory) == 1
+    [send] = [span for span in spans.get_finished_spans() if span.name == f"send {topic}"]
+    assert send.status.status_code is StatusCode.ERROR
 
 
 async def test_a_refused_message_is_parked_and_later_messages_still_flow(
@@ -320,3 +332,34 @@ async def test_sessions_that_idle_inside_a_transaction_are_ended_by_postgres(
         timeout = await session.scalar(text("SHOW idle_in_transaction_session_timeout"))
 
     assert timeout == "1min"
+
+
+async def test_the_writers_trace_continues_through_the_relay_into_kafka(
+    session_factory: SessionFactory,
+    publisher: KafkaPublisher,
+    read_topic: ReadTopic,
+    topic: str,
+    spans: InMemorySpanExporter,
+) -> None:
+    with tracer.start_as_current_span("POST /cases"):
+        await write(session_factory, topic, new_envelope())
+
+    await relay_for(session_factory, publisher).publish_pending()
+
+    request = next(span for span in spans.get_finished_spans() if span.name == "POST /cases")
+    publish = next(span for span in spans.get_finished_spans() if span.name == f"send {topic}")
+    assert request.context is not None
+    assert publish.context is not None
+    assert publish.kind is SpanKind.PRODUCER
+    assert publish.parent is not None
+    assert publish.parent.span_id == request.context.span_id
+    [record] = await read_topic(topic, 1)
+    # The header carries the publish span; the payload keeps the writer's context.
+    assert ids(dict(record.headers)["traceparent"].decode()) == (
+        publish.context.trace_id,
+        publish.context.span_id,
+    )
+    assert ids(json.loads(record.value)["traceparent"]) == (
+        request.context.trace_id,
+        request.context.span_id,
+    )

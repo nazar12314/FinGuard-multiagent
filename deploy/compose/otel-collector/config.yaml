@@ -13,6 +13,11 @@ processors:
   batch: {}
 
 exporters:
+  # Every span, for system traces in Grafana.
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
   otlp_http/langfuse:
     endpoint: http://langfuse-web:3000/api/public/otel
     headers:
@@ -26,7 +31,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlp_http/langfuse]
+      # Langfuse also gets every span until LLM calls exist; then only gen_ai spans go there.
+      exporters: [otlp_grpc/tempo, otlp_http/langfuse]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]

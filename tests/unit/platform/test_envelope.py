@@ -148,3 +148,14 @@ def test_wire_format_uses_the_documented_field_names() -> None:
 @given(envelopes)
 def test_json_round_trip_preserves_the_envelope(envelope: Envelope) -> None:
     assert Envelope.model_validate_json(envelope.model_dump_json()) == envelope
+
+
+def test_the_trace_context_can_be_set_when_the_envelope_is_created() -> None:
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    first = Envelope.new("cases.case.opened", {}, traceparent=traceparent)
+
+    assert first.traceparent == traceparent
+    assert first.follow_up("cases.case.triaged", {}).traceparent is None
+    assert first.follow_up("cases.case.triaged", {}, traceparent=traceparent).traceparent == (
+        traceparent
+    )

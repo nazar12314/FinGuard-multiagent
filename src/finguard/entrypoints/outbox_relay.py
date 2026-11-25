@@ -8,6 +8,7 @@ from typing import Protocol
 from finguard.core.container import build_outbox_relay
 from finguard.core.logging import LogEvent, configure_logging, get_logger
 from finguard.core.settings import OutboxRelaySettings, Settings, load_settings_or_exit
+from finguard.core.telemetry import configure_telemetry
 from finguard.infrastructure.outbox.relay import MessageParked
 
 logger = get_logger(__name__)
@@ -99,11 +100,14 @@ async def run(settings: Settings) -> None:
 def main() -> None:
     settings = load_settings_or_exit()
     configure_logging(settings)
+    flush_telemetry = configure_telemetry(settings, process="outbox-relay")
     try:
         asyncio.run(run(settings))
     except RelayMustRestart:
         # Pending messages stay in the outbox; the supervisor restarts the process.
         raise SystemExit(1) from None
+    finally:
+        flush_telemetry()
 
 
 if __name__ == "__main__":

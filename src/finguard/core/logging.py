@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Any, TextIO
 
 import structlog
+from opentelemetry import trace
 
 from finguard.core.settings import Settings
 
@@ -59,6 +60,17 @@ def _redact_secrets(
     return {k: redact(v) if k == "event" else redact(v, k) for k, v in event_dict.items()}
 
 
+def _add_trace_ids(
+    _: Any, __: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    # Lets a log line be looked up as a trace, and a trace's spans be matched to their logs.
+    context = trace.get_current_span().get_span_context()
+    if context.is_valid:
+        event_dict["trace_id"] = format(context.trace_id, "032x")
+        event_dict["span_id"] = format(context.span_id, "016x")
+    return event_dict
+
+
 def configure_logging(settings: Settings, stream: TextIO | None = None) -> None:
     """Send structlog and stdlib logging (uvicorn, libraries) through one renderer."""
     # Tracebacks are rendered without frame locals, which would otherwise log DSNs and
@@ -76,6 +88,7 @@ def configure_logging(settings: Settings, stream: TextIO | None = None) -> None:
 
     shared: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        _add_trace_ids,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),

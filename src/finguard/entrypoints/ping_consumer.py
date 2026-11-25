@@ -6,6 +6,7 @@ from finguard.core.container import build_message_consumer, open_session_factory
 from finguard.core.diagnostics import PING_CONSUMER, PING_REQUESTED, ping_handler
 from finguard.core.logging import LogEvent, configure_logging, get_logger
 from finguard.core.settings import Settings, load_settings_or_exit
+from finguard.core.telemetry import configure_telemetry
 from finguard.platform.topics import DIAGNOSTICS_PINGS
 
 logger = get_logger(__name__)
@@ -34,7 +35,11 @@ def main() -> None:
     """Handle the dev-only pings sent through POST /api/v1/dev/pings."""
     settings = load_settings_or_exit()
     configure_logging(settings)
-    asyncio.run(run(settings))
+    flush_telemetry = configure_telemetry(settings, process="ping-consumer")
+    try:
+        asyncio.run(run(settings))
+    finally:
+        flush_telemetry()
 
 
 if __name__ == "__main__":

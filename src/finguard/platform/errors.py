@@ -1,5 +1,7 @@
 from typing import ClassVar
 
+from pydantic import ValidationError
+
 
 class ApplicationError(Exception):
     """Base for errors raised by application services.
@@ -40,3 +42,21 @@ class DependencyUnavailable(ApplicationError):
     """A dependency (database, Kafka, storage, LLM provider) is down; safe to retry."""
 
     code = "dependency_unavailable"
+
+
+def describe_error(error: BaseException) -> str:
+    """The error's type, plus its message only where that can't carry message data.
+
+    Driver and validation errors quote the values they choke on, and this text goes
+    into logs, Kafka headers and traces.
+    """
+    name = type(error).__name__
+    if isinstance(error, ApplicationError):
+        return f"{name}: {error.message}"
+    if isinstance(error, ValidationError):
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in problem['loc']) or 'value'}: {problem['type']}"
+            for problem in error.errors(include_input=False)
+        )
+        return f"{name}: {problems}"
+    return name

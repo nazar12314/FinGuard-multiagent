@@ -10,6 +10,8 @@ from typing import Any
 import structlog
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.errors import CommitFailedError, IllegalStateError
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,8 +21,14 @@ from finguard.infrastructure.kafka.topics import (
     split_retry_topic,
 )
 from finguard.infrastructure.outbox.postgres import PostgresInbox
+from finguard.infrastructure.tracing import (
+    context_from,
+    current_traceparent,
+    record_failure,
+    tracer,
+)
 from finguard.platform.envelope import Envelope
-from finguard.platform.errors import ApplicationError, DependencyUnavailable
+from finguard.platform.errors import ApplicationError, DependencyUnavailable, describe_error
 
 MessageHandler = Callable[[Envelope, AsyncSession], Awaitable[None]]
 
@@ -63,22 +71,9 @@ def is_permanent(error: Exception) -> bool:
     return isinstance(error, ApplicationError) and not isinstance(error, DependencyUnavailable)
 
 
-def describe(error: Exception) -> str:
-    """The error's type, plus its message only where that can't carry message data.
-
-    Driver and validation errors quote the values they choke on, and this text goes
-    into logs and Kafka headers.
-    """
-    name = type(error).__name__
-    if isinstance(error, ApplicationError):
-        return f"{name}: {error.message}"
-    if isinstance(error, ValidationError):
-        problems = "; ".join(
-            f"{'.'.join(str(part) for part in problem['loc']) or 'value'}: {problem['type']}"
-            for problem in error.errors(include_input=False)
-        )
-        return f"{name}: {problems}"
-    return name
+def _header(record: Any, name: str) -> str | None:
+    value = dict(record.headers).get(name)
+    return value.decode(errors="replace") if value is not None else None
 
 
 def _frames(error: Exception) -> list[str]:
@@ -169,7 +164,30 @@ class KafkaMessageConsumer:
             self._consumer.pause(partition)
             self._paused_until[partition] = due_at
             return
-        await self._process(record)
+        with tracer.start_as_current_span(
+            f"process {record.topic}",
+            context=context_from(_header(record, "traceparent")),
+            kind=SpanKind.CONSUMER,
+            attributes={
+                "messaging.system": "kafka",
+                "messaging.operation.name": "process",
+                "messaging.operation.type": "process",
+                "messaging.destination.name": record.topic,
+                "messaging.destination.partition.id": str(record.partition),
+                "messaging.kafka.offset": record.offset,
+                "messaging.consumer.group.name": self._name,
+            },
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
+            try:
+                await self._process(record)
+            except _Stopping:
+                raise
+            except Exception as error:
+                # Handing a copy on failed, so the message stays uncommitted.
+                record_failure(span, error)
+                raise
         await self._commit(partition, record)
 
     def _owns(self, partition: TopicPartition) -> bool:
@@ -227,6 +245,7 @@ class KafkaMessageConsumer:
         try:
             envelope = Envelope.model_validate_json(record.value)
         except ValidationError as error:
+            record_failure(trace.get_current_span(), error)
             await self._hand_on(record, dead_letter_topic(source), error)
             return
 
@@ -245,35 +264,51 @@ class KafkaMessageConsumer:
     async def _handle(self, envelope: Envelope, handler: MessageHandler) -> Exception | None:
         attempt = 1
         while True:
+            error = await self._attempt(envelope, handler, attempt)
+            if error is None:
+                return None
+            if is_permanent(error) or attempt >= self._policy.attempts:
+                return error
+            backoff = self._policy.attempt_backoff_s * 2 ** (attempt - 1)
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+            if self._stop.is_set():
+                raise _Stopping from error
+            attempt += 1
+
+    async def _attempt(
+        self, envelope: Envelope, handler: MessageHandler, attempt: int
+    ) -> Exception | None:
+        with tracer.start_as_current_span(
+            f"handle {envelope.type}",
+            attributes={"messaging.message.id": str(envelope.id), "finguard.attempt": attempt},
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
             try:
                 async with (
                     asyncio.timeout(self._policy.handler_timeout_s),
                     self._session_factory.begin() as session,
                 ):
                     if not await PostgresInbox(session).try_mark_processed(envelope.id, self._name):
+                        span.add_event("duplicate_skipped")
                         logger.info(ConsumerEvent.DUPLICATE_SKIPPED, message_id=str(envelope.id))
                         return None
                     await handler(envelope, session)
                 return None
             except Exception as error:
-                permanent = is_permanent(error)
+                record_failure(span, error)
+                # Logged inside the attempt's span, so the line points at the failed attempt.
                 logger.warning(
                     ConsumerEvent.HANDLER_FAILED,
                     message_id=str(envelope.id),
                     message_type=envelope.type,
                     attempt=attempt,
-                    permanent=permanent,
-                    error=describe(error),
+                    permanent=is_permanent(error),
+                    error=describe_error(error),
                     frames=_frames(error),
                 )
-                if permanent or attempt >= self._policy.attempts:
-                    return error
-                backoff = self._policy.attempt_backoff_s * 2 ** (attempt - 1)
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-                if self._stop.is_set():
-                    raise _Stopping from error
-                attempt += 1
+                return error
 
     async def _hand_on(self, record: Any, topic: str, error: Exception) -> None:
         own_headers = dict(record.headers)
@@ -281,17 +316,25 @@ class KafkaMessageConsumer:
         origin: bytes = own_headers.get(ORIGIN_HEADER) or (
             f"{record.topic}:{record.partition}:{record.offset}".encode()
         )
-        headers = [(key, value) for key, value in record.headers if not key.startswith("finguard-")]
+        headers = [
+            (key, value)
+            for key, value in record.headers
+            if not key.startswith("finguard-") and key != "traceparent"
+        ]
         headers += [
             (CONSUMER_HEADER, self._name.encode()),
-            (ERROR_HEADER, describe(error)[:1000].encode()),
+            (ERROR_HEADER, describe_error(error)[:1000].encode()),
             (ORIGIN_HEADER, origin),
         ]
+        # The copy continues the trace from this delivery, so retries appear as a chain.
+        if traceparent := current_traceparent():
+            headers.append(("traceparent", traceparent.encode()))
+        trace.get_current_span().add_event("handed_on", {"messaging.destination.name": topic})
         await self._producer.send_and_wait(topic, record.value, key=record.key, headers=headers)
         dead_lettered = topic == dead_letter_topic(split_retry_topic(record.topic)[0])
         logger.warning(
             (ConsumerEvent.DEAD_LETTERED if dead_lettered else ConsumerEvent.RETRY_SCHEDULED),
             topic=topic,
             origin=origin.decode(),
-            error=describe(error),
+            error=describe_error(error),
         )

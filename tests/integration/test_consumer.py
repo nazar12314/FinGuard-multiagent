@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,6 +25,7 @@ from finguard.infrastructure.kafka.topics import dead_letter_topic, ensure_topic
 from finguard.infrastructure.outbox.postgres import PostgresOutbox
 from finguard.infrastructure.outbox.relay import OutboxRelay
 from finguard.infrastructure.outbox.tables import inbox
+from finguard.infrastructure.tracing import current_traceparent, tracer
 from finguard.platform.envelope import Envelope
 from finguard.platform.errors import ValidationFailed
 from finguard.platform.topics import Topic
@@ -31,6 +34,7 @@ SessionFactory = async_sessionmaker[AsyncSession]
 ReadTopic = Callable[..., Awaitable[list[Any]]]
 TopicSize = Callable[[str], Awaitable[int]]
 SettingsFor = Callable[..., Settings]
+LogLines = Callable[[], list[dict[str, Any]]]
 HANDLED_TYPE = "cases.case.opened"
 RETRY_DELAY_S = 0.5
 
@@ -373,6 +377,7 @@ async def test_a_malformed_message_is_dead_lettered_and_consumption_continues(
     group: str,
     producer: AIOKafkaProducer,
     read_topic: ReadTopic,
+    spans: InMemorySpanExporter,
 ) -> None:
     last = new_envelope()
     await send(producer, source.name, b"{not json")
@@ -385,6 +390,14 @@ async def test_a_malformed_message_is_dead_lettered_and_consumption_continues(
     [dead] = await read_topic(dead_letter_topic(source.name), 1)
     assert dead.value == b"{not json"
     assert header(dead, ERROR_HEADER) == "ValidationError: value: json_invalid"
+    malformed, handled = [
+        span
+        for span in sorted(spans.get_finished_spans(), key=lambda span: span.start_time or 0)
+        if span.name == f"process {source.name}"
+    ]
+    assert malformed.status.status_code is StatusCode.ERROR
+    assert malformed.status.description == "ValidationError: value: json_invalid"
+    assert handled.status.status_code is StatusCode.UNSET
 
 
 async def test_messages_of_other_types_are_skipped(
@@ -492,3 +505,45 @@ async def test_a_rebalance_during_handling_neither_crashes_nor_duplicates_work(
 
     handled = slow.handled_ids() + fast.handled_ids()
     assert sorted(handled) == sorted(envelope.id for envelope in envelopes)
+
+
+async def test_a_retried_message_stays_in_one_trace(
+    session_factory: SessionFactory,
+    settings_for: SettingsFor,
+    source: Topic,
+    group: str,
+    producer: AIOKafkaProducer,
+    spans: InMemorySpanExporter,
+    log_lines: LogLines,
+) -> None:
+    with tracer.start_as_current_span("publish") as publish:
+        traceparent = current_traceparent()
+        assert traceparent is not None
+        await send(producer, source.name, new_envelope(), [("traceparent", traceparent.encode())])
+    handler = RecordingHandler(ConnectionError("db down"))
+
+    await consume_until(settings_for(), source, handler, lambda: bool(handler.handled), group)
+
+    finished = sorted(spans.get_finished_spans(), key=lambda span: span.start_time or 0)
+    first, retried = [span for span in finished if span.name.startswith("process ")]
+    failed, succeeded = [span for span in finished if span.name.startswith("handle ")]
+    assert first.name == f"process {source.name}"
+    assert retried.name == f"process {source.name}.retry.1"
+    assert first.parent is not None
+    assert first.parent.span_id == publish.get_span_context().span_id
+    # The retry copy continues from the delivery that failed.
+    assert first.context is not None
+    assert retried.parent is not None
+    assert retried.parent.span_id == first.context.span_id
+    assert failed.parent is not None
+    assert failed.parent.span_id == first.context.span_id
+    assert failed.status.status_code is StatusCode.ERROR
+    assert retried.context is not None
+    assert succeeded.parent is not None
+    assert succeeded.parent.span_id == retried.context.span_id
+    assert {span.context.trace_id for span in finished if span.context} == {
+        publish.get_span_context().trace_id
+    }
+    assert failed.context is not None
+    [failure] = [line for line in log_lines() if line["event"] == "consumer.handler_failed"]
+    assert failure["span_id"] == format(failed.context.span_id, "016x")

@@ -43,6 +43,7 @@ class Envelope(BaseModel):
         *,
         correlation_id: UUID | None = None,
         version: int = 1,
+        traceparent: str | None = None,
     ) -> Self:
         # A message that starts a flow and has no case to correlate with
         # becomes the flow's correlation root itself.
@@ -52,6 +53,7 @@ class Envelope(BaseModel):
             type=type,
             version=version,
             correlation_id=message_id if correlation_id is None else correlation_id,
+            traceparent=traceparent,
             data=data,
         )
 
@@ -62,6 +64,7 @@ class Envelope(BaseModel):
         *,
         correlation_id: UUID | None = None,
         version: int = 1,
+        traceparent: str | None = None,
     ) -> Self:
         # Pass correlation_id to re-scope the chain, e.g. to the case id once an alert
         # opens a case; the causation link back to the alert is kept either way.
@@ -70,5 +73,6 @@ class Envelope(BaseModel):
             version=version,
             correlation_id=self.correlation_id if correlation_id is None else correlation_id,
             causation_id=self.id,
+            traceparent=traceparent,
             data=data,
         )
