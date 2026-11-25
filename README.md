@@ -113,7 +113,7 @@ docker exec finguard-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstra
 
 Start the stack with `--profile observability`, and export `FINGUARD_TELEMETRY__ENABLED=true` next to the other
 variables before starting the three processes. Each ping then becomes one trace: the API request, the relay's
-`publish diagnostics.pings`, the consumer's `process diagnostics.pings` with one `handle` span per attempt, and a
+`send diagnostics.pings`, the consumer's `process diagnostics.pings` with one `handle` span per attempt, and a
 `process diagnostics.pings.retry.1` child for every retry hop. Failed attempts are marked as errors.
 
 Every log line written inside a span carries its `trace_id`. In Grafana (http://localhost:3001), open Explore, pick

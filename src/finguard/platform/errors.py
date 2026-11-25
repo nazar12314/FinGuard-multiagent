@@ -44,7 +44,7 @@ class DependencyUnavailable(ApplicationError):
     code = "dependency_unavailable"
 
 
-def describe_error(error: Exception) -> str:
+def describe_error(error: BaseException) -> str:
     """The error's type, plus its message only where that can't carry message data.
 
     Driver and validation errors quote the values they choke on, and this text goes

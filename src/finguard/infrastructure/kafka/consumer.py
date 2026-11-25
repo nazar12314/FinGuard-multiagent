@@ -198,6 +198,7 @@ class KafkaMessageConsumer:
             kind=SpanKind.CONSUMER,
             attributes={
                 "messaging.system": "kafka",
+                "messaging.operation.name": "process",
                 "messaging.operation.type": "process",
                 "messaging.destination.name": record.topic,
                 "messaging.destination.partition.id": str(record.partition),
@@ -206,8 +207,15 @@ class KafkaMessageConsumer:
             },
             record_exception=False,
             set_status_on_exception=False,
-        ):
-            await self._process(record)
+        ) as span:
+            try:
+                await self._process(record)
+            except _Stopping:
+                raise
+            except Exception as error:
+                # Handing a copy on failed, so the message stays uncommitted.
+                record_failure(span, error)
+                raise
         await self._commit(partition, record)
 
     async def _measure_lag(self) -> None:
@@ -280,6 +288,7 @@ class KafkaMessageConsumer:
         try:
             envelope = Envelope.model_validate_json(record.value)
         except ValidationError as error:
+            record_failure(trace.get_current_span(), error)
             await self._hand_on(record, dead_letter_topic(source), error)
             return
 
@@ -305,18 +314,7 @@ class KafkaMessageConsumer:
             error = await self._attempt(envelope, handler, attempt, topic)
             if error is None:
                 return None
-            permanent = is_permanent(error)
-            HANDLER_FAILURES.labels(self._name, envelope.type, str(permanent).lower()).inc()
-            logger.warning(
-                ConsumerEvent.HANDLER_FAILED,
-                message_id=str(envelope.id),
-                message_type=envelope.type,
-                attempt=attempt,
-                permanent=permanent,
-                error=describe_error(error),
-                frames=_frames(error),
-            )
-            if permanent or attempt >= self._policy.attempts:
+            if is_permanent(error) or attempt >= self._policy.attempts:
                 return error
             backoff = self._policy.attempt_backoff_s * 2 ** (attempt - 1)
             with suppress(TimeoutError):
@@ -349,6 +347,18 @@ class KafkaMessageConsumer:
                 return None
             except Exception as error:
                 record_failure(span, error)
+                permanent = is_permanent(error)
+                HANDLER_FAILURES.labels(self._name, envelope.type, str(permanent).lower()).inc()
+                # Logged inside the attempt's span, so the line points at the failed attempt.
+                logger.warning(
+                    ConsumerEvent.HANDLER_FAILED,
+                    message_id=str(envelope.id),
+                    message_type=envelope.type,
+                    attempt=attempt,
+                    permanent=permanent,
+                    error=describe_error(error),
+                    frames=_frames(error),
+                )
                 return error
 
     async def _hand_on(self, record: Any, topic: str, error: Exception) -> None:

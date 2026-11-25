@@ -57,6 +57,7 @@ class OpsSettings(BaseModel):
 class TelemetrySettings(BaseModel):
     # Off unless asked for, so a stack without the collector doesn't log export failures.
     enabled: bool = False
+    # The default matches the local docker-compose stack; prod must set it when enabled.
     otlp_endpoint: str = "http://localhost:4318"
 
 
@@ -112,6 +113,8 @@ class Settings(BaseSettings):
             problems.append("kafka.replication_factor must be set explicitly in prod")
         if "enabled" not in self.telemetry.model_fields_set:
             problems.append("telemetry.enabled must be set explicitly in prod")
+        if self.telemetry.enabled and "otlp_endpoint" not in self.telemetry.model_fields_set:
+            problems.append("telemetry.otlp_endpoint must be set explicitly in prod")
         if problems:
             raise ValueError("; ".join(problems))
         return self
