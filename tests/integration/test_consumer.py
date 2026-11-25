@@ -34,6 +34,7 @@ SessionFactory = async_sessionmaker[AsyncSession]
 ReadTopic = Callable[..., Awaitable[list[Any]]]
 TopicSize = Callable[[str], Awaitable[int]]
 SettingsFor = Callable[..., Settings]
+LogLines = Callable[[], list[dict[str, Any]]]
 HANDLED_TYPE = "cases.case.opened"
 RETRY_DELAY_S = 0.5
 
@@ -376,6 +377,7 @@ async def test_a_malformed_message_is_dead_lettered_and_consumption_continues(
     group: str,
     producer: AIOKafkaProducer,
     read_topic: ReadTopic,
+    spans: InMemorySpanExporter,
 ) -> None:
     last = new_envelope()
     await send(producer, source.name, b"{not json")
@@ -388,6 +390,14 @@ async def test_a_malformed_message_is_dead_lettered_and_consumption_continues(
     [dead] = await read_topic(dead_letter_topic(source.name), 1)
     assert dead.value == b"{not json"
     assert header(dead, ERROR_HEADER) == "ValidationError: value: json_invalid"
+    malformed, handled = [
+        span
+        for span in sorted(spans.get_finished_spans(), key=lambda span: span.start_time or 0)
+        if span.name == f"process {source.name}"
+    ]
+    assert malformed.status.status_code is StatusCode.ERROR
+    assert malformed.status.description == "ValidationError: value: json_invalid"
+    assert handled.status.status_code is StatusCode.UNSET
 
 
 async def test_messages_of_other_types_are_skipped(
@@ -504,6 +514,7 @@ async def test_a_retried_message_stays_in_one_trace(
     group: str,
     producer: AIOKafkaProducer,
     spans: InMemorySpanExporter,
+    log_lines: LogLines,
 ) -> None:
     with tracer.start_as_current_span("publish") as publish:
         traceparent = current_traceparent()
@@ -533,3 +544,6 @@ async def test_a_retried_message_stays_in_one_trace(
     assert {span.context.trace_id for span in finished if span.context} == {
         publish.get_span_context().trace_id
     }
+    assert failed.context is not None
+    [failure] = [line for line in log_lines() if line["event"] == "consumer.handler_failed"]
+    assert failure["span_id"] == format(failed.context.span_id, "016x")

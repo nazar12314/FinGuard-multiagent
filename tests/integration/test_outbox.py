@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 from aiokafka.admin import NewTopic
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, StatusCode
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -221,7 +221,7 @@ async def test_messages_stay_pending_when_publishing_fails(
 
 
 async def test_a_publish_that_hangs_times_out_and_leaves_messages_pending(
-    session_factory: SessionFactory, topic: str
+    session_factory: SessionFactory, topic: str, spans: InMemorySpanExporter
 ) -> None:
     await write(session_factory, topic, new_envelope(), key="slow")
 
@@ -231,6 +231,8 @@ async def test_a_publish_that_hangs_times_out_and_leaves_messages_pending(
         ).publish_pending()
 
     assert await pending_count(session_factory) == 1
+    [send] = [span for span in spans.get_finished_spans() if span.name == f"send {topic}"]
+    assert send.status.status_code is StatusCode.ERROR
 
 
 async def test_a_refused_message_is_parked_and_later_messages_still_flow(
@@ -345,7 +347,7 @@ async def test_the_writers_trace_continues_through_the_relay_into_kafka(
     await relay_for(session_factory, publisher).publish_pending()
 
     request = next(span for span in spans.get_finished_spans() if span.name == "POST /cases")
-    publish = next(span for span in spans.get_finished_spans() if span.name == f"publish {topic}")
+    publish = next(span for span in spans.get_finished_spans() if span.name == f"send {topic}")
     assert request.context is not None
     assert publish.context is not None
     assert publish.kind is SpanKind.PRODUCER

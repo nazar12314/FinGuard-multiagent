@@ -229,7 +229,7 @@ async def test_a_ping_is_one_trace_from_the_api_request_to_its_handler(
         for span in finished
         if span.kind is SpanKind.SERVER and span.name == "POST /api/v1/dev/pings"
     )
-    publish = next(span for span in finished if span.name == "publish diagnostics.pings")
+    publish = next(span for span in finished if span.name == "send diagnostics.pings")
     process = next(span for span in finished if span.name == "process diagnostics.pings")
     handle = next(span for span in finished if span.name == "handle diagnostics.ping.requested")
     for parent, child in ((request, publish), (publish, process), (process, handle)):

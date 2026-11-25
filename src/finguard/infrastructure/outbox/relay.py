@@ -13,8 +13,8 @@ from finguard.infrastructure.kafka.publisher import MessageRejected, OutgoingMes
 from finguard.infrastructure.outbox.tables import outbox
 from finguard.infrastructure.tracing import (
     context_from,
-    current_traceparent,
     record_failure,
+    traceparent_of,
     tracer,
 )
 
@@ -82,11 +82,12 @@ class OutboxRelay:
             async with asyncio.timeout(self._publish_timeout_s):
                 for row in rows:
                     with tracer.start_as_current_span(
-                        f"publish {row.destination}",
+                        f"send {row.destination}",
                         context=context_from(row.payload.get("traceparent")),
                         kind=SpanKind.PRODUCER,
                         attributes={
                             "messaging.system": "kafka",
+                            "messaging.operation.name": "send",
                             "messaging.operation.type": "send",
                             "messaging.destination.name": row.destination,
                             "messaging.message.id": str(row.id),
@@ -96,7 +97,12 @@ class OutboxRelay:
                     ) as span:
                         try:
                             await self._publisher.publish(
-                                _to_outgoing(row.destination, row.key, row.payload)
+                                _to_outgoing(
+                                    row.destination,
+                                    row.key,
+                                    row.payload,
+                                    traceparent=traceparent_of(span),
+                                )
                             )
                         except MessageRejected as rejection:
                             record_failure(span, rejection)
@@ -107,7 +113,8 @@ class OutboxRelay:
                                 .values(failed_at=func.now(), last_error=str(rejection))
                             )
                             break
-                        except Exception as error:
+                        # CancelledError too: the batch timeout cancels a stuck publish.
+                        except (Exception, asyncio.CancelledError) as error:
                             record_failure(span, error)
                             raise
                     published.append(row.id)
@@ -129,10 +136,11 @@ class OutboxRelay:
             return cast(CursorResult[Any], result).rowcount
 
 
-def _to_outgoing(topic: str, key: str, envelope: Mapping[str, Any]) -> OutgoingMessage:
-    # The header carries the publish span, so the consumer's span becomes its child and can
+def _to_outgoing(
+    topic: str, key: str, envelope: Mapping[str, Any], *, traceparent: str | None
+) -> OutgoingMessage:
+    # The header carries the send span, so the consumer's span becomes its child and can
     # start before the payload is parsed. The payload keeps the writer's context.
-    traceparent = current_traceparent()
     return OutgoingMessage(
         topic=topic,
         key=key,
