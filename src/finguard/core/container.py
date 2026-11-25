@@ -8,14 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finguard.core.auth import Authenticator, DevHeaderAuthenticator
 from finguard.core.settings import AuthSettings, Settings
-from finguard.infrastructure.db.engine import create_database_engine, create_session_factory
+from finguard.infrastructure.db.engine import (
+    create_database_engine,
+    create_session_factory,
+)
 from finguard.infrastructure.kafka.consumer import (
     KafkaMessageConsumer,
     MessageHandler,
     RetryPolicy,
     create_kafka_consumer,
 )
-from finguard.infrastructure.kafka.publisher import KafkaPublisher, create_kafka_producer
+from finguard.infrastructure.kafka.publisher import (
+    KafkaPublisher,
+    create_kafka_producer,
+)
 from finguard.infrastructure.kafka.topics import subscribed_topics
 from finguard.infrastructure.outbox.relay import OutboxRelay
 from finguard.platform.topics import Topic
@@ -31,20 +37,22 @@ class Container:
 
 
 def build_authenticator(settings: AuthSettings) -> Authenticator:
-    # Exhaustive over the Literal: mypy reports a missing return once a new mode is added.
     match settings.mode:
         case "dev_header":
             return DevHeaderAuthenticator()
 
 
 async def build_api_container(settings: Settings, resources: AsyncExitStack) -> Container:
-    """Wire the API process. Every client opened here is registered on `resources`,
-    which the caller owns, so it is closed even if a later step fails."""
+    """
+    Wire the API process. Every client opened here is registered on `resources`,
+    which the caller owns, so it is closed even if a later step fails.
+    """
     return Container(settings=settings, authenticator=build_authenticator(settings.auth))
 
 
 async def build_outbox_relay(settings: Settings, resources: AsyncExitStack) -> OutboxRelay:
     relay_settings = settings.outbox_relay
+
     return OutboxRelay(
         _open_database(settings, resources),
         KafkaPublisher(
@@ -63,7 +71,9 @@ async def build_message_consumer(
     topics: Sequence[Topic],
     handlers: Mapping[str, MessageHandler],
 ) -> KafkaMessageConsumer:
-    """Wire a consumer group named `name` for `topics`, including their retry topics."""
+    """
+    Wire a consumer group named `name` for `topics`, including their retry topics.
+    """
     policy = RetryPolicy(
         attempts=settings.consumer.attempts,
         attempt_backoff_s=settings.consumer.attempt_backoff_s,
@@ -79,7 +89,9 @@ async def build_message_consumer(
         policy=policy,
     )
     resources.push_async_callback(consumer.stop)
+
     await consumer.start()
+
     return KafkaMessageConsumer(
         consumer, producer, session_factory, handlers, name=name, policy=policy
     )
@@ -94,6 +106,7 @@ def _open_database(
         idle_in_transaction_timeout_s=settings.database.idle_in_transaction_timeout_s,
     )
     resources.push_async_callback(engine.dispose)
+
     return create_session_factory(engine)
 
 
