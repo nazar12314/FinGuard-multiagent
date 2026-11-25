@@ -9,6 +9,7 @@ from typing import Any
 import polars as pl
 
 from datagen.amlworld import map_bank_slice, read_bank_rows, transactions_csv
+from datagen.contacts import generate_contacts, laundering_rings
 from datagen.customers import (
     accounts_csv,
     generate_customers,
@@ -45,6 +46,9 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
         activity_starts=first_booking.date(),
         seed=config.seed,
     )
+    contacts = generate_contacts(
+        customers.customers, laundering_rings(holders, truth.account_labels), config.seed
+    )
     accounts = bank_slice.accounts.join(
         holders.select("account_id", "customer_id"), on="account_id", how="left"
     ).sort("account_id")
@@ -55,10 +59,15 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
         "customers.parquet": customers.customers,
         "kyc_profiles.parquet": customers.kyc_profiles,
         "persons.parquet": customers.persons,
+        "addresses.parquet": contacts.addresses,
+        "customer_addresses.parquet": contacts.customer_addresses,
+        "devices.parquet": contacts.devices,
+        "customer_devices.parquet": contacts.customer_devices,
         "ground_truth/transaction_labels.parquet": truth.transaction_labels,
         "ground_truth/laundering_attempts.parquet": truth.laundering_attempts,
         "ground_truth/account_labels.parquet": truth.account_labels,
         "ground_truth/customer_labels.parquet": customers.labels,
+        "ground_truth/shared_attribute_labels.parquet": contacts.labels,
     }
 
     # Build next to the target and swap it in at the end, so a failed build never leaves a

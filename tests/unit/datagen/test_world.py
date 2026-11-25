@@ -26,9 +26,23 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
 
     assert world == tmp_path / "worlds" / "seed-7"
     assert pl.read_parquet(world / "transactions.parquet").height == 2
-    for name in ["customers", "kyc_profiles", "persons"]:
+    for name in [
+        "customers",
+        "kyc_profiles",
+        "persons",
+        "addresses",
+        "customer_addresses",
+        "devices",
+        "customer_devices",
+    ]:
         assert (world / f"{name}.parquet").exists()
-    for name in ["transaction_labels", "laundering_attempts", "account_labels", "customer_labels"]:
+    for name in [
+        "transaction_labels",
+        "laundering_attempts",
+        "account_labels",
+        "customer_labels",
+        "shared_attribute_labels",
+    ]:
         assert (world / "ground_truth" / f"{name}.parquet").exists()
     accounts = pl.read_parquet(world / "accounts.parquet")
     assert accounts.filter("held_at_our_bank").get_column("customer_id").null_count() == 0
