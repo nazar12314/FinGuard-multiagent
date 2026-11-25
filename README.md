@@ -135,7 +135,8 @@ FINGUARD_ENV=dev uv run finguard-contracts check-compatibility
 
 The generator in `datagen/` (its own workspace package, installed by `uv sync`) builds a seeded, deterministic world
 from the [IBM AMLworld dataset](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml).
-Download `HI-Small_Trans.csv` and `HI-Small_Patterns.txt` from Kaggle into `data/raw/amlworld/`, then:
+Download `HI-Small_Trans.csv`, `HI-Small_Patterns.txt` and `HI-Small_accounts.csv` from Kaggle into
+`data/raw/amlworld/`, then:
 
 ```bash
 uv run finguard-datagen build --seed 42    # writes data/worlds/seed-42/
@@ -148,13 +149,22 @@ world keeps only the transactions an account at our bank is party to, since thos
 | File | Contents |
 | --- | --- |
 | `transactions.parquet` | One row per transaction, in time order: original amounts and currencies plus EUR amounts from a fixed FX table |
-| `accounts.parquet` | Every account in those transactions, identified as `<bank>:<account>`, flagged when it's held at our bank |
+| `accounts.parquet` | Every account in those transactions, identified as `<bank>:<account>`, flagged when it's held at our bank, with its customer |
+| `customers.parquet` | One customer per AMLworld entity at our bank: sole traders and companies, with name, country, industry and onboarding date |
+| `kyc_profiles.parquet` | What each customer declared at onboarding: expected monthly volume, annual turnover, account purpose, and the risk rating the onboarding rule gave |
+| `persons.parquet` | The people behind sole traders, with Ukrainian names kept in Cyrillic next to their official romanisation |
 | `ground_truth/transaction_labels.parquet` | The AMLworld laundering label per transaction and the attempt it belongs to, if any |
 | `ground_truth/laundering_attempts.parquet` | Each laundering attempt from the pattern file that reaches our bank: typology, size, and how many of its transactions we see |
 | `ground_truth/account_labels.parquet` | Per account: how many laundering transactions it's party to, and in which attempts |
+| `ground_truth/customer_labels.parquet` | Per customer: laundering-linked or not, and whether its profile fits its activity, doesn't (and why), or is an innocent look-alike |
 | `manifest.json` | Seed, AMLworld variant, our bank, FX rates, their hash and row counts |
 
 Everything under `ground_truth/` is for evaluation only and never reaches the running system.
+
+Bank 12's AMLworld entities are almost all partnerships, sole proprietorships and corporations, so FinGuard is an SME
+business neobank. Declared volumes follow each customer's real flows. About 60% of laundering-linked customers get a
+profile that doesn't fit their activity, and 10% of the others get an equally odd one for an innocent reason, so a
+profile alone never gives the label away.
 
 ### Replaying a world into Kafka
 
