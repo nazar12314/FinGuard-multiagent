@@ -156,6 +156,20 @@ world keeps only the transactions an account at our bank is party to, since thos
 
 Everything under `ground_truth/` is for evaluation only and never reaches the running system.
 
+### Replaying a world into Kafka
+
+`replay` plays the bank's core system: it sends each transaction as a `transaction.booked` message to `tx.raw`, in
+booking order, keyed by our customer's account. Messages carry the original amounts and currencies; ingestion
+converts them to EUR. With the stack up and the topics created (`finguard-topics`):
+
+```bash
+uv run finguard-datagen replay --seed 42                      # one simulated day per minute
+uv run finguard-datagen replay --seed 42 --speedup inf        # as fast as Kafka acknowledges (~1,800/s locally)
+uv run finguard-datagen replay --seed 42 --speedup inf --max-rate 200 --limit 5000
+```
+
+HI-Small books 95% of its transactions in the first nine of its 18 days, so a paced replay is busiest early on.
+
 ## Health, readiness and metrics
 
 Every process serves three endpoints for Kubernetes probes and Prometheus. The API serves them on its own port; the

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from tests.unit.datagen.amlworld_files import (
+from tests.amlworld_files import (
     OUR_BANK,
     attempt,
     csv_row,
