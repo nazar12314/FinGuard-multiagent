@@ -8,6 +8,7 @@ from finguard.core.logging import configure_logging
 from finguard.core.settings import load_settings_or_exit
 from finguard.infrastructure.db.metadata import metadata
 from finguard.infrastructure.outbox import tables as _outbox_tables  # noqa: F401
+from finguard.modules.screening.adapters import tables as _screening_tables  # noqa: F401
 
 MIGRATIONS = "finguard.infrastructure.db:migrations"
 

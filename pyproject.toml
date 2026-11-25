@@ -9,6 +9,7 @@ dependencies = [
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "fastapi>=0.165.0",
+    "jellyfish>=1.3.0",
     "opentelemetry-api>=1.45.2",
     "opentelemetry-exporter-otlp-proto-http>=1.45.2",
     "opentelemetry-instrumentation-fastapi>=0.66b2",
@@ -29,6 +30,12 @@ finguard-migrate = "finguard.entrypoints.migrate:main"
 finguard-outbox-relay = "finguard.entrypoints.outbox_relay:main"
 finguard-ping-consumer = "finguard.entrypoints.ping_consumer:main"
 finguard-topics = "finguard.entrypoints.topics:main"
+finguard-watchlist-import = "finguard.entrypoints.watchlist_import:main"
+
+[project.optional-dependencies]
+screening = [
+    "pyicu>=2.17",
+]
 
 [dependency-groups]
 dev = [
@@ -39,6 +46,7 @@ dev = [
     "jsonschema>=4.26.0",
     "mypy",
     "pre-commit",
+    "pyicu>=2.17",
     "pytest",
     "pytest-asyncio",
     "ruff",
@@ -71,6 +79,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "ASYNC", "PT", "TID
 "langgraph".msg = "Infrastructure import: use a port, implement it in adapters/"
 "openai".msg = "Vendor SDK: go through the LlmGateway port"
 "anthropic".msg = "Vendor SDK: go through the LlmGateway port"
+"icu".msg = "Heavy library (an optional extra): use it in an adapter"
 
 [tool.ruff.lint.per-file-ignores]
 # Only the outer rings may touch infrastructure libraries and vendor SDKs.
@@ -89,9 +98,9 @@ files = ["src", "datagen/src", "tests"]
 mypy_path = ["src", "datagen/src"]
 explicit_package_bases = true
 
-# aiokafka ships no type information.
+# aiokafka and PyICU ship no type information.
 [[tool.mypy.overrides]]
-module = ["aiokafka", "aiokafka.*"]
+module = ["aiokafka", "aiokafka.*", "icu"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

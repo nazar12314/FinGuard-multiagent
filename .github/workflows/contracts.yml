@@ -37,6 +37,8 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      # PyICU builds from source against the system ICU.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libicu-dev pkg-config
       - run: uv sync --locked
       - name: Contract files match the message models
         run: uv run finguard-contracts check

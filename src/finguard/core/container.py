@@ -28,6 +28,9 @@ from finguard.infrastructure.kafka.publisher import (
 )
 from finguard.infrastructure.kafka.topics import subscribed_topics
 from finguard.infrastructure.outbox.relay import OutboxRelay
+from finguard.modules.screening.adapters.icu_transliterator import IcuTransliterator
+from finguard.modules.screening.adapters.postgres import PostgresWatchlist
+from finguard.modules.screening.service import WatchlistImport
 from finguard.platform.topics import Topic
 
 _CONSUMER_PRODUCER_STOP_TIMEOUT_S = 10.0
@@ -111,6 +114,11 @@ async def build_message_consumer(
         policy=policy,
         heartbeat=heartbeat.beat,
     )
+
+
+def build_watchlist_import(settings: Settings, resources: AsyncExitStack) -> WatchlistImport:
+    session_factory = open_session_factory(settings, resources)
+    return WatchlistImport(PostgresWatchlist(session_factory), IcuTransliterator())
 
 
 def consumer_heartbeat(settings: Settings) -> Heartbeat:

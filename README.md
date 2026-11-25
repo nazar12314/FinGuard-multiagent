@@ -18,7 +18,10 @@ FINGUARD_ENV=dev uv run finguard-topics           # creates Kafka topics with th
 FINGUARD_ENV=dev uv run finguard-outbox-relay     # publishes outbox rows to Kafka
 ```
 
-Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required. `finguard-migrate` is the Alembic command line
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required, plus the ICU library, which PyICU builds against
+for name transliteration. On macOS, run `brew install icu4c pkg-config` and, before the first `uv sync`,
+`export PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig"`. On Debian or Ubuntu, run
+`apt-get install libicu-dev pkg-config`. `finguard-migrate` is the Alembic command line
 configured from FinGuard's settings (`FINGUARD_DATABASE__URL`), so `history`, `downgrade` and `revision
 --autogenerate` work the same way.
 
@@ -183,6 +186,24 @@ uv run finguard-datagen replay --seed 42 --speedup inf --max-rate 200 --limit 50
 ```
 
 HI-Small books 95% of its transactions in the first nine of its 18 days, so a paced replay is busiest early on.
+
+## Sanctions and PEP watchlist
+
+Screening matches names against [OpenSanctions](https://www.opensanctions.org/) (free for non-commercial use,
+CC BY-NC). Download the `sanctions` and `peps` collections' `targets.simple.csv`, then replace the watchlist:
+
+```bash
+mkdir -p data/raw/opensanctions && cd data/raw/opensanctions
+curl -fL -o sanctions.targets.simple.csv https://data.opensanctions.org/datasets/latest/sanctions/targets.simple.csv
+curl -fL -o peps.targets.simple.csv https://data.opensanctions.org/datasets/latest/peps/targets.simple.csv
+cd - && FINGUARD_ENV=dev uv run finguard-watchlist-import    # ~45 s for ~790k entities
+```
+
+People and organisations are kept; vessels, aircraft, wallets and securities are not. Each name and alias is stored
+in every common Latin spelling: ICU's generic romanisation, plus BGN/PCGN for Cyrillic (Шевченко is both "Sevcenko"
+and "Shevchenko"). Each spelling is also stored casefolded without accents or punctuation, with its tokens sorted
+(so name order doesn't matter), and as phonetic keys. Trigram indexes on these forms let screening find candidates by
+similarity. The import replaces the whole list in one transaction.
 
 ## Health, readiness and metrics
 
