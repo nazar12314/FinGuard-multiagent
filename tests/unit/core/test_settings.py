@@ -27,7 +27,8 @@ def test_prod_refuses_to_start_with_the_dev_auth_stub() -> None:
 
 
 @pytest.mark.parametrize(
-    "variable", ["database.url", "kafka.bootstrap_servers", "kafka.replication_factor"]
+    "variable",
+    ["database.url", "kafka.bootstrap_servers", "kafka.replication_factor", "telemetry.enabled"],
 )
 def test_prod_refuses_to_fall_back_to_the_local_stack(variable: str) -> None:
     with pytest.raises(ValidationError, match=f"{variable} must be set explicitly"):
@@ -38,6 +39,7 @@ def test_prod_accepts_explicit_connection_settings(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("FINGUARD_DATABASE__URL", "postgresql+asyncpg://app:pw@db/finguard")
     monkeypatch.setenv("FINGUARD_KAFKA__BOOTSTRAP_SERVERS", "kafka:9092")
     monkeypatch.setenv("FINGUARD_KAFKA__REPLICATION_FACTOR", "3")
+    monkeypatch.setenv("FINGUARD_TELEMETRY__ENABLED", "true")
 
     with pytest.raises(ValidationError) as error:
         Settings(env="prod")

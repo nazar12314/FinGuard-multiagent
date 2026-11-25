@@ -3,6 +3,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from importlib.metadata import version
 
 from fastapi import FastAPI
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from finguard.core.container import Container, build_api_container
 from finguard.core.http import diagnostics
@@ -41,4 +42,8 @@ def create_app(
     if settings.dev_endpoints_enabled:
         app.include_router(diagnostics.router)
     install_exception_handlers(app)
+    # One server span per request; the per-message receive and send spans are only noise.
+    FastAPIInstrumentor.instrument_app(
+        app, excluded_urls="docs,openapi.json", exclude_spans=["receive", "send"]
+    )
     return app

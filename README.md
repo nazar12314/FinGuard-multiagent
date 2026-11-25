@@ -47,8 +47,9 @@ keep running.
 | Langfuse | observability | http://localhost:3000 | `admin@finguard.local` / `finguard-dev`; project keys `pk-lf-finguard-dev` / `sk-lf-finguard-dev` |
 | Prometheus | observability | http://localhost:9090 | none |
 | Grafana | observability | http://localhost:3001 | anonymous admin |
+| Tempo | observability | inside Compose only; Grafana's Tempo datasource reads it | none |
 
-The collector sends traces to Langfuse and serves metrics for Prometheus to scrape. Ollama runs on the host, not in
+The collector sends traces to Tempo (viewed in Grafana) and Langfuse, and serves metrics for Prometheus to scrape. Ollama runs on the host, not in
 Compose. All ports are bound to `127.0.0.1`, and the credentials are for this local stack only.
 
 ## Watching a message flow
@@ -107,6 +108,17 @@ To read the dead-letter topic with its error headers:
 docker exec finguard-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:19092 \
   --topic diagnostics.pings.dlq --from-beginning --timeout-ms 5000 --formatter-property print.headers=true
 ```
+
+### Seeing the whole flow as one trace
+
+Start the stack with `--profile observability`, and export `FINGUARD_TELEMETRY__ENABLED=true` next to the other
+variables before starting the three processes. Each ping then becomes one trace: the API request, the relay's
+`publish diagnostics.pings`, the consumer's `process diagnostics.pings` with one `handle` span per attempt, and a
+`process diagnostics.pings.retry.1` child for every retry hop. Failed attempts are marked as errors.
+
+Every log line written inside a span carries its `trace_id`. In Grafana (http://localhost:3001), open Explore, pick
+the Tempo datasource and paste the `trace_id`, or search with TraceQL, for example
+`{resource.service.name="finguard-ping-consumer" && status=error}`.
 
 ## Repository layout
 

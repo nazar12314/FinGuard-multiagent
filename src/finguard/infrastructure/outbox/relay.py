@@ -5,11 +5,18 @@ from datetime import timedelta
 from typing import Any, Protocol, cast
 from uuid import UUID
 
+from opentelemetry.trace import SpanKind
 from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finguard.infrastructure.kafka.publisher import MessageRejected, OutgoingMessage
 from finguard.infrastructure.outbox.tables import outbox
+from finguard.infrastructure.tracing import (
+    context_from,
+    current_traceparent,
+    record_failure,
+    tracer,
+)
 
 # Any fixed bigint works, as long as every relay uses the same one ("outbox" in ASCII).
 RELAY_LOCK_ID = 0x6F7574626F78
@@ -74,18 +81,35 @@ class OutboxRelay:
             published: list[UUID] = []
             async with asyncio.timeout(self._publish_timeout_s):
                 for row in rows:
-                    try:
-                        await self._publisher.publish(
-                            _to_outgoing(row.destination, row.key, row.payload)
-                        )
-                    except MessageRejected as rejection:
-                        parked = MessageParked(row.id, row.destination, str(rejection))
-                        await session.execute(
-                            update(outbox)
-                            .where(outbox.c.id == row.id)
-                            .values(failed_at=func.now(), last_error=str(rejection))
-                        )
-                        break
+                    with tracer.start_as_current_span(
+                        f"publish {row.destination}",
+                        context=context_from(row.payload.get("traceparent")),
+                        kind=SpanKind.PRODUCER,
+                        attributes={
+                            "messaging.system": "kafka",
+                            "messaging.operation.type": "send",
+                            "messaging.destination.name": row.destination,
+                            "messaging.message.id": str(row.id),
+                        },
+                        record_exception=False,
+                        set_status_on_exception=False,
+                    ) as span:
+                        try:
+                            await self._publisher.publish(
+                                _to_outgoing(row.destination, row.key, row.payload)
+                            )
+                        except MessageRejected as rejection:
+                            record_failure(span, rejection)
+                            parked = MessageParked(row.id, row.destination, str(rejection))
+                            await session.execute(
+                                update(outbox)
+                                .where(outbox.c.id == row.id)
+                                .values(failed_at=func.now(), last_error=str(rejection))
+                            )
+                            break
+                        except Exception as error:
+                            record_failure(span, error)
+                            raise
                     published.append(row.id)
 
             if published:
@@ -106,9 +130,9 @@ class OutboxRelay:
 
 
 def _to_outgoing(topic: str, key: str, envelope: Mapping[str, Any]) -> OutgoingMessage:
-    # The trace context also travels as a Kafka header, so consumers can continue the
-    # trace before they parse the payload.
-    traceparent = envelope.get("traceparent")
+    # The header carries the publish span, so the consumer's span becomes its child and can
+    # start before the payload is parsed. The payload keeps the writer's context.
+    traceparent = current_traceparent()
     return OutgoingMessage(
         topic=topic,
         key=key,

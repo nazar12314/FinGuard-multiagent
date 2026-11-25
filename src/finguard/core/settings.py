@@ -47,6 +47,12 @@ class ConsumerSettings(BaseModel):
     handler_timeout_s: float = Field(default=60.0, gt=0)
 
 
+class TelemetrySettings(BaseModel):
+    # Off unless asked for, so a stack without the collector doesn't log export failures.
+    enabled: bool = False
+    otlp_endpoint: str = "http://localhost:4318"
+
+
 class OutboxRelaySettings(BaseModel):
     poll_interval_s: float = Field(default=1.0, gt=0)
     batch_size: int = Field(default=100, ge=1)
@@ -79,6 +85,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     kafka: KafkaSettings = KafkaSettings()
     consumer: ConsumerSettings = ConsumerSettings()
+    telemetry: TelemetrySettings = TelemetrySettings()
     outbox_relay: OutboxRelaySettings = OutboxRelaySettings()
 
     @model_validator(mode="after")
@@ -95,6 +102,8 @@ class Settings(BaseSettings):
             problems.append("kafka.bootstrap_servers must be set explicitly in prod")
         if "replication_factor" not in self.kafka.model_fields_set:
             problems.append("kafka.replication_factor must be set explicitly in prod")
+        if "enabled" not in self.telemetry.model_fields_set:
+            problems.append("telemetry.enabled must be set explicitly in prod")
         if problems:
             raise ValueError("; ".join(problems))
         return self

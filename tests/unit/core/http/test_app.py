@@ -6,6 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
 
 from finguard.core.container import Container, build_api_container
 from finguard.core.http.app import create_app
@@ -227,3 +229,20 @@ def test_clients_opened_before_a_startup_failure_are_closed() -> None:
     with pytest.raises(DependencyUnavailable), TestClient(app):
         pass
     assert kafka.closed
+
+
+def test_each_request_is_traced_and_its_log_line_names_the_trace(
+    log_lines: LogLines, spans: InMemorySpanExporter
+) -> None:
+    with TestClient(build_app(Settings(env="test"))) as client:
+        client.get("/ok")
+        client.get("/docs")
+
+    # Only the server span: /docs is excluded, and so are the ASGI receive and send spans.
+    [server] = spans.get_finished_spans()
+    assert server.kind is SpanKind.SERVER
+    assert server.name == "GET /ok"
+    assert server.context is not None
+    completed = [line for line in log_lines() if line["event"] == "http.request.completed"]
+    ok_line = next(line for line in completed if line["path"] == "/ok")
+    assert ok_line["trace_id"] == format(server.context.trace_id, "032x")

@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -214,3 +216,24 @@ def test_pings_need_an_authenticated_caller(api: TestClient) -> None:
     response = api.post("/api/v1/dev/pings", json={}, headers={"X-Dev-User-Id": ""})
 
     assert response.status_code == 401
+
+
+async def test_a_ping_is_one_trace_from_the_api_request_to_its_handler(
+    api: TestClient, relay: OutboxRelay, settings: Settings, spans: InMemorySpanExporter
+) -> None:
+    await send_and_follow(api, relay, settings, {}, has_status("handled"))
+
+    finished = spans.get_finished_spans()
+    request = next(
+        span
+        for span in finished
+        if span.kind is SpanKind.SERVER and span.name == "POST /api/v1/dev/pings"
+    )
+    publish = next(span for span in finished if span.name == "publish diagnostics.pings")
+    process = next(span for span in finished if span.name == "process diagnostics.pings")
+    handle = next(span for span in finished if span.name == "handle diagnostics.ping.requested")
+    for parent, child in ((request, publish), (publish, process), (process, handle)):
+        assert parent.context is not None
+        assert child.parent is not None
+        assert child.parent.span_id == parent.context.span_id
+        assert child.parent.trace_id == parent.context.trace_id

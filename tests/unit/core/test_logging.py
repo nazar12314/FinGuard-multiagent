@@ -5,8 +5,10 @@ from typing import Any, NamedTuple
 
 import pytest
 import structlog
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from finguard.core.logging import get_logger, redact
+from finguard.infrastructure.tracing import tracer
 
 LogLines = Callable[[], list[dict[str, Any]]]
 
@@ -81,3 +83,18 @@ def test_logging_a_named_tuple_does_not_raise(log_lines: LogLines) -> None:
     get_logger("finguard.test").info("graph.hop", point=Point(1, 2))
 
     assert log_lines()[-1]["point"] == [1, 2]
+
+
+def test_log_lines_inside_a_span_carry_its_trace_and_span_ids(
+    log_lines: LogLines, spans: InMemorySpanExporter
+) -> None:
+    with tracer.start_as_current_span("handle"):
+        get_logger("finguard.test").info("cases.case.opened")
+    get_logger("finguard.test").info("cases.case.closed")
+
+    [span] = spans.get_finished_spans()
+    assert span.context is not None
+    inside, outside = log_lines()[-2:]
+    assert inside["trace_id"] == format(span.context.trace_id, "032x")
+    assert inside["span_id"] == format(span.context.span_id, "016x")
+    assert "trace_id" not in outside
