@@ -61,3 +61,36 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: uv run pytest tests/integration
+
+  contracts:
+    runs-on: ubuntu-latest
+    services:
+      apicurio:
+        image: apicurio/apicurio-registry:3.3.5 # same as deploy/compose
+        ports: ["8080:8080"]
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/health/ready"
+          --health-interval 5s --health-timeout 5s --health-retries 24
+    env:
+      FINGUARD_ENV: test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the base branch's contracts are compared against
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Contract files match the message models
+        run: uv run finguard-contracts check
+      - name: Contracts stay backward compatible with the base branch
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/base"
+          if git cat-file -e "origin/$BASE_REF:contracts" 2>/dev/null; then
+            git archive "origin/$BASE_REF" contracts | tar -x -C "$RUNNER_TEMP/base"
+            uv run finguard-contracts --directory "$RUNNER_TEMP/base/contracts" register
+          fi
+          uv run finguard-contracts check-compatibility
