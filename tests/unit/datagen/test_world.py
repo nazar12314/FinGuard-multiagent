@@ -3,13 +3,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from tests.amlworld_files import (
-    OUR_BANK,
-    attempt,
-    csv_row,
-    write_patterns_file,
-    write_transactions_csv,
-)
+from tests.amlworld_files import OUR_BANK, attempt, csv_row, write_raw_files
 
 from datagen.cli import main
 from datagen.world import WorldConfig, build_world
@@ -19,10 +13,11 @@ from datagen.world import WorldConfig, build_world
 def raw_dir(tmp_path: Path) -> Path:
     raw = tmp_path / "raw"
     laundering = csv_row(OUR_BANK, "C1", "002", "B1", laundering=True)
-    write_transactions_csv(
-        raw, [laundering, csv_row("001", "A1", OUR_BANK, "C2"), csv_row("001", "A1", "002", "B1")]
+    write_raw_files(
+        raw,
+        [laundering, csv_row("001", "A1", OUR_BANK, "C2"), csv_row("001", "A1", "002", "B1")],
+        [attempt("CYCLE", [laundering], "Max 1 hops")],
     )
-    write_patterns_file(raw, [attempt("CYCLE", [laundering], "Max 1 hops")])
     return raw
 
 
@@ -31,8 +26,26 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
 
     assert world == tmp_path / "worlds" / "seed-7"
     assert pl.read_parquet(world / "transactions.parquet").height == 2
-    for name in ["transaction_labels", "laundering_attempts", "account_labels"]:
+    for name in [
+        "customers",
+        "kyc_profiles",
+        "persons",
+        "addresses",
+        "customer_addresses",
+        "devices",
+        "customer_devices",
+    ]:
+        assert (world / f"{name}.parquet").exists()
+    for name in [
+        "transaction_labels",
+        "laundering_attempts",
+        "account_labels",
+        "customer_labels",
+        "shared_attribute_labels",
+    ]:
         assert (world / "ground_truth" / f"{name}.parquet").exists()
+    accounts = pl.read_parquet(world / "accounts.parquet")
+    assert accounts.filter("held_at_our_bank").get_column("customer_id").null_count() == 0
     manifest = json.loads((world / "manifest.json").read_text())
     assert manifest["seed"] == 7
     assert manifest["our_bank"] == "12"
@@ -44,6 +57,8 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "laundering_transactions": 1,
         "laundering_transactions_in_attempts": 1,
         "laundering_attempts": 1,
+        "customers": 2,
+        "laundering_linked_customers": 1,
     }
 
 
