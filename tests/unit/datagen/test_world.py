@@ -3,7 +3,13 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from tests.unit.datagen.amlworld_files import OUR_BANK, csv_row, write_transactions_csv
+from tests.unit.datagen.amlworld_files import (
+    OUR_BANK,
+    attempt,
+    csv_row,
+    write_patterns_file,
+    write_transactions_csv,
+)
 
 from datagen.cli import main
 from datagen.world import WorldConfig, build_world
@@ -12,14 +18,11 @@ from datagen.world import WorldConfig, build_world
 @pytest.fixture
 def raw_dir(tmp_path: Path) -> Path:
     raw = tmp_path / "raw"
+    laundering = csv_row(OUR_BANK, "C1", "002", "B1", laundering=True)
     write_transactions_csv(
-        raw,
-        [
-            csv_row(OUR_BANK, "C1", "002", "B1", laundering=True),
-            csv_row("001", "A1", OUR_BANK, "C2"),
-            csv_row("001", "A1", "002", "B1"),
-        ],
+        raw, [laundering, csv_row("001", "A1", OUR_BANK, "C2"), csv_row("001", "A1", "002", "B1")]
     )
+    write_patterns_file(raw, [attempt("CYCLE", [laundering], "Max 1 hops")])
     return raw
 
 
@@ -28,7 +31,8 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
 
     assert world == tmp_path / "worlds" / "seed-7"
     assert pl.read_parquet(world / "transactions.parquet").height == 2
-    assert pl.read_parquet(world / "ground_truth" / "transaction_labels.parquet").height == 2
+    for name in ["transaction_labels", "laundering_attempts", "account_labels"]:
+        assert (world / "ground_truth" / f"{name}.parquet").exists()
     manifest = json.loads((world / "manifest.json").read_text())
     assert manifest["seed"] == 7
     assert manifest["our_bank"] == OUR_BANK
@@ -38,6 +42,8 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "accounts": 4,
         "accounts_at_our_bank": 2,
         "laundering_transactions": 1,
+        "laundering_transactions_in_attempts": 1,
+        "laundering_attempts": 1,
     }
 
 
@@ -70,6 +76,13 @@ def test_a_failed_build_keeps_the_previous_world(tmp_path: Path, raw_dir: Path) 
         build_world(WorldConfig(seed=7), tmp_path / "missing", tmp_path / "worlds")
 
     assert (world / "transactions.parquet").exists()
+
+
+def test_needs_the_pattern_file(tmp_path: Path, raw_dir: Path) -> None:
+    (raw_dir / "HI-Small_Patterns.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="Patterns"):
+        build_world(WorldConfig(seed=7), raw_dir, tmp_path / "worlds")
 
 
 def test_command_builds_a_world(

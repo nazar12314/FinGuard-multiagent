@@ -66,7 +66,6 @@ class AmlworldFormatError(ValueError):
 class BankSlice:
     transactions: pl.DataFrame
     accounts: pl.DataFrame
-    labels: pl.DataFrame
 
 
 def transactions_csv(raw_dir: Path, variant: str) -> Path:
@@ -84,7 +83,12 @@ def account_id(bank: pl.Expr, account: pl.Expr) -> pl.Expr:
     return pl.format("{}:{}", bank, account)
 
 
-def read_rows(csv_path: Path) -> pl.LazyFrame:
+def touches_bank(bank: str) -> pl.Expr:
+    return (pl.col("from_bank") == bank) | (pl.col("to_bank") == bank)
+
+
+def read_bank_rows(csv_path: Path, our_bank: str) -> pl.DataFrame:
+    """The CSV rows our bank is party to, as text, with their transaction and account ids."""
     if not csv_path.is_file():
         raise FileNotFoundError(
             f"{csv_path} not found; download it from the IBM AMLworld dataset on Kaggle"
@@ -93,15 +97,12 @@ def read_rows(csv_path: Path) -> pl.LazyFrame:
         header = csv_file.readline().strip()
     if header != CSV_HEADER:
         raise AmlworldFormatError(f"{csv_path.name} has an unexpected header: {header}")
-    return pl.scan_csv(
-        csv_path, has_header=True, new_columns=list(CSV_SCHEMA), schema_overrides=CSV_SCHEMA
-    ).with_row_index("row")
-
-
-def load_bank_slice(csv_path: Path, our_bank: str) -> BankSlice:
     rows = (
-        read_rows(csv_path)
-        .filter((pl.col("from_bank") == our_bank) | (pl.col("to_bank") == our_bank))
+        pl.scan_csv(
+            csv_path, has_header=True, new_columns=list(CSV_SCHEMA), schema_overrides=CSV_SCHEMA
+        )
+        .with_row_index("row")
+        .filter(touches_bank(our_bank))
         .collect()
     )
     if rows.is_empty():
@@ -109,17 +110,21 @@ def load_bank_slice(csv_path: Path, our_bank: str) -> BankSlice:
     _reject_unknown(rows, ["payment_currency", "receiving_currency"], CURRENCY_CODES)
     _reject_unknown(rows, ["payment_format"], PAYMENT_FORMATS)
     _reject_unknown(rows, ["is_laundering"], {"0", "1"})
-
-    rows = rows.with_columns(
+    return rows.with_columns(
         transaction_id=transaction_id(pl.col("row")),
         from_account_id=account_id(pl.col("from_bank"), pl.col("from_account")),
         to_account_id=account_id(pl.col("to_bank"), pl.col("to_account")),
+    )
+
+
+def map_bank_slice(rows: pl.DataFrame, our_bank: str) -> BankSlice:
+    amounts = rows.with_columns(
         payment_currency=pl.col("payment_currency").replace_strict(CURRENCY_CODES),
         receiving_currency=pl.col("receiving_currency").replace_strict(CURRENCY_CODES),
         amount_paid=pl.col("amount_paid").cast(ORIGINAL_AMOUNT),
         amount_received=pl.col("amount_received").cast(ORIGINAL_AMOUNT),
     )
-    transactions = rows.select(
+    transactions = amounts.select(
         "transaction_id",
         booked_at=pl.col("timestamp").str.to_datetime("%Y/%m/%d %H:%M", time_zone="UTC"),
         from_account_id="from_account_id",
@@ -148,11 +153,7 @@ def load_bank_slice(csv_path: Path, our_bank: str) -> BankSlice:
         .with_columns(held_at_our_bank=pl.col("bank_id") == our_bank)
         .sort("account_id")
     )
-
-    labels = rows.select("transaction_id", is_laundering=pl.col("is_laundering") == "1").sort(
-        "transaction_id"
-    )
-    return BankSlice(transactions=transactions, accounts=accounts, labels=labels)
+    return BankSlice(transactions=transactions, accounts=accounts)
 
 
 def _reject_unknown(rows: pl.DataFrame, columns: list[str], known: Collection[str]) -> None:

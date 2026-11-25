@@ -30,3 +30,19 @@ def write_transactions_csv(raw_dir: Path, rows: list[str], variant: str = "HI-Sm
     path = raw_dir / f"{variant}_Trans.csv"
     path.write_text("\n".join([CSV_HEADER, *rows]) + "\n")
     return path
+
+
+def attempt(pattern: str, rows: list[str], description: str | None = None) -> list[str]:
+    header = f"BEGIN LAUNDERING ATTEMPT - {pattern}"
+    if description is not None:
+        header += f":  {description}"
+    return [header, *rows, f"END LAUNDERING ATTEMPT - {pattern}", ""]
+
+
+def write_patterns_file(
+    raw_dir: Path, attempts: list[list[str]], variant: str = "HI-Small"
+) -> Path:
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    path = raw_dir / f"{variant}_Patterns.txt"
+    path.write_text("\n".join(line for lines in attempts for line in lines) + "\n")
+    return path

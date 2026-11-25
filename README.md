@@ -148,8 +148,12 @@ account at that bank is party to, since those are all the neobank would see:
 | --- | --- |
 | `transactions.parquet` | One row per transaction, in time order: original amounts and currencies plus EUR amounts from a fixed FX table |
 | `accounts.parquet` | Every account in those transactions, identified as `<bank>:<account>`, flagged when it's held at our bank |
-| `ground_truth/transaction_labels.parquet` | The AMLworld laundering label per transaction, kept apart from what the system sees |
+| `ground_truth/transaction_labels.parquet` | The AMLworld laundering label per transaction and the attempt it belongs to, if any |
+| `ground_truth/laundering_attempts.parquet` | Each laundering attempt from the pattern file that reaches our bank: typology, size, and how many of its transactions we see |
+| `ground_truth/account_labels.parquet` | Per account: how many laundering transactions it's party to, and in which attempts |
 | `manifest.json` | Seed, AMLworld variant, our bank, FX rates, their hash and row counts |
+
+Everything under `ground_truth/` is for evaluation only and never reaches the running system.
 
 ## Health, readiness and metrics
 

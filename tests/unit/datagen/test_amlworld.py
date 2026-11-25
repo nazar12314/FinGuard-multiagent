@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 from tests.unit.datagen.amlworld_files import OUR_BANK, csv_row, write_transactions_csv
 
-from datagen.amlworld import AmlworldFormatError, load_bank_slice
+from datagen.amlworld import AmlworldFormatError, BankSlice, map_bank_slice, read_bank_rows
+
+
+def load_bank_slice(csv: Path, our_bank: str) -> BankSlice:
+    return map_bank_slice(read_bank_rows(csv, our_bank), our_bank)
 
 
 def test_keeps_only_transactions_our_bank_is_party_to(tmp_path: Path) -> None:
@@ -125,19 +129,12 @@ def test_names_payment_formats_in_snake_case(tmp_path: Path) -> None:
     assert transactions.get_column("payment_format").to_list() == ["credit_card"]
 
 
-def test_labels_are_kept_apart_from_the_transactions(tmp_path: Path) -> None:
-    csv = write_transactions_csv(
-        tmp_path,
-        [
-            csv_row(OUR_BANK, "C1", "002", "B1", laundering=True),
-            csv_row(OUR_BANK, "C1", "002", "B2"),
-        ],
-    )
+def test_labels_are_kept_out_of_the_transactions(tmp_path: Path) -> None:
+    csv = write_transactions_csv(tmp_path, [csv_row(OUR_BANK, "C1", "002", "B1", laundering=True)])
 
-    bank_slice = load_bank_slice(csv, OUR_BANK)
+    transactions = load_bank_slice(csv, OUR_BANK).transactions
 
-    assert "is_laundering" not in bank_slice.transactions.columns
-    assert bank_slice.labels.rows() == [("tx-000000000", True), ("tx-000000001", False)]
+    assert "is_laundering" not in transactions.columns
 
 
 def test_rejects_an_unknown_currency(tmp_path: Path) -> None:
