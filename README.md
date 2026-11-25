@@ -133,16 +133,19 @@ workers on a small ops port each (`FINGUARD_OPS__PORT` overrides it):
 
 | Endpoint | Answers |
 | --- | --- |
-| `/healthz` | 200 while the process is alive (liveness) |
-| `/readyz` | 200 when its dependencies answer (database, plus Kafka for the workers), 503 with the failing check otherwise, and 503 as soon as SIGTERM arrives |
+| `/healthz` | 200 while the process is alive (liveness). A worker answers 503 once its main loop has stopped going round, for example when stuck in an await |
+| `/readyz` | 200 when its dependencies answer (database, plus Kafka for the workers), 503 with the failing check otherwise. A worker also answers 503 as soon as SIGTERM arrives |
 | `/metrics` | Prometheus metrics: HTTP requests and latency, outbox published, parked, pending and oldest pending age, consumer deliveries by outcome, handler failures, handling time and lag |
 
 With the observability profile, Prometheus (http://localhost:9090) scrapes all three processes every 5 s under the
 `finguard` job. Try `finguard_outbox_oldest_pending_age_seconds` or
-`sum by (outcome) (finguard_consumer_deliveries_total)`.
+`sum by (outcome) (finguard_consumer_deliveries_total)`. The relay measures its backlog every 5 s, also while
+publishing fails; while the relay itself is down those gauges disappear, so alert on
+`up{process="outbox-relay"} == 0` as well.
 
 On SIGTERM a worker reports not ready, stops taking new messages, finishes (or abandons uncommitted) the one in hand,
-commits its offset and closes its connections.
+commits its offset and closes its connections. The API stops accepting connections at once and finishes the requests
+in flight, for up to `FINGUARD_API__GRACEFUL_SHUTDOWN_TIMEOUT_S`.
 
 ## Repository layout
 

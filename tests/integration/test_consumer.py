@@ -14,7 +14,8 @@ from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from finguard.core.container import build_message_consumer
+from finguard.core.container import build_message_consumer, consumer_heartbeat
+from finguard.core.ops import Readiness
 from finguard.core.settings import ConsumerSettings, DatabaseSettings, KafkaSettings, Settings
 from finguard.infrastructure.kafka import consumer as consumer_runtime
 from finguard.infrastructure.kafka.consumer import CONSUMER_HEADER, ERROR_HEADER, ORIGIN_HEADER
@@ -115,7 +116,13 @@ async def running(
     stop = asyncio.Event()
     async with AsyncExitStack() as resources:
         consumer = await build_message_consumer(
-            settings, resources, name=name, topics=[source], handlers={HANDLED_TYPE: handler}
+            settings,
+            resources,
+            name=name,
+            topics=[source],
+            handlers={HANDLED_TYPE: handler},
+            readiness=Readiness(),
+            heartbeat=consumer_heartbeat(settings),
         )
         task = asyncio.create_task(consumer.run(stop))
         try:

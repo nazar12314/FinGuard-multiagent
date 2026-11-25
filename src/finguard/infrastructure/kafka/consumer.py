@@ -85,6 +85,12 @@ class RetryPolicy:
         backoff = sum(self.attempt_backoff_s * 2.0**attempt for attempt in range(self.attempts - 1))
         return self.attempts * self.handler_timeout_s + backoff
 
+    @property
+    def max_poll_interval_s(self) -> float:
+        # The broker drops a consumer from the group if handling one message, retries
+        # included, takes longer than this between polls.
+        return max(300.0, self.longest_handling_s + 60)
+
 
 def is_permanent(error: Exception) -> bool:
     # A business-rule outcome or malformed data comes out the same however often it is
@@ -121,9 +127,7 @@ def create_kafka_consumer(
         enable_auto_commit=False,
         # A new consumer group starts from the oldest retained message, so nothing is missed.
         auto_offset_reset="earliest",
-        # The broker would drop the consumer from the group if handling one message,
-        # retries included, took longer than this.
-        max_poll_interval_ms=int(max(300.0, policy.longest_handling_s + 60) * 1000),
+        max_poll_interval_ms=int(policy.max_poll_interval_s * 1000),
     )
 
 
@@ -144,6 +148,7 @@ class KafkaMessageConsumer:
         *,
         name: str,
         policy: RetryPolicy,
+        heartbeat: Callable[[], None],
     ) -> None:
         self._consumer = consumer
         self._producer = producer
@@ -151,6 +156,7 @@ class KafkaMessageConsumer:
         self._handlers = handlers
         self._name = name
         self._policy = policy
+        self._heartbeat = heartbeat
         self._paused_until: dict[TopicPartition, float] = {}
         self._stop = asyncio.Event()
         self._lag_partitions: set[TopicPartition] = set()
@@ -162,6 +168,7 @@ class KafkaMessageConsumer:
         """
         self._stop = stop
         while not stop.is_set():
+            self._heartbeat()
             self._resume_due_partitions()
             if time.monotonic() - self._lag_measured_at >= _LAG_INTERVAL_S:
                 await self._measure_lag()

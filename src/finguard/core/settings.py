@@ -72,6 +72,7 @@ class OutboxRelaySettings(BaseModel):
     max_consecutive_failures: int = Field(default=5, ge=1)
     retention_days: int = Field(default=7, ge=1)
     prune_interval_s: float = Field(default=3600.0, gt=0)
+    backlog_interval_s: float = Field(default=5.0, gt=0)
 
 
 class Settings(BaseSettings):
