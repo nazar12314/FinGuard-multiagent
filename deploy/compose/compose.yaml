@@ -182,7 +182,7 @@ services:
       langfuse-web:
         condition: service_healthy
       tempo:
-        condition: service_started
+        condition: service_healthy
     ports:
       - 127.0.0.1:4317:4317
       - 127.0.0.1:4318:4318
@@ -192,11 +192,16 @@ services:
   tempo:
     image: grafana/tempo:3.1.1
     profiles: [observability]
-    # The image has no shell or HTTP client, so readiness (GET :3200/ready) can't be checked here.
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
       - tempo-data:/var/tempo
+    healthcheck:
+      # The image has no shell or curl; the binary itself checks GET :3200/ready.
+      test: ["CMD", "/tempo", "-health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
 
   prometheus:
     image: prom/prometheus:v3.16.0
