@@ -74,12 +74,33 @@ def one_entity_per_account(rows: list[str]) -> list[tuple[str, str, str, str]]:
     ]
 
 
+OPENSANCTIONS_HEADER = (
+    '"id","schema","name","aliases","birth_date","countries","program_ids","dataset"'
+)
+LISTED = [
+    '"NK-1","Person","Petr Ivanovich Sidorov","","1965-03-02","ru","EU-RUS","EU"',
+    '"NK-2","Person","Шевченко Олександр","","1970","ua","","EU"',
+    '"NK-3","Organization","Acme Trading","","","ru","","EU"',
+]
+PEPS = ['"Q-1","Person","Anna Maria Kowalska","","1980-05-01","pl","","Wikidata"']
+
+
+def write_opensanctions(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, rows in [("sanctions", LISTED), ("peps", PEPS)]:
+        lines = [OPENSANCTIONS_HEADER, *rows]
+        (directory / f"{name}.targets.simple.csv").write_text("\n".join(lines) + "\n")
+
+
 def write_raw_files(
     raw_dir: Path, rows: list[str], attempts: list[list[str]] | None = None
 ) -> None:
-    write_transactions_csv(raw_dir, rows)
-    write_patterns_file(raw_dir, attempts or [])
-    write_accounts_csv(raw_dir, one_entity_per_account(rows))
+    """Lay out raw_dir as the world build expects: amlworld/ and opensanctions/."""
+    amlworld = raw_dir / "amlworld"
+    write_transactions_csv(amlworld, rows)
+    write_patterns_file(amlworld, attempts or [])
+    write_accounts_csv(amlworld, one_entity_per_account(rows))
+    write_opensanctions(raw_dir / "opensanctions")
 
 
 def build_small_world(directory: Path, rows: list[str]) -> Path:

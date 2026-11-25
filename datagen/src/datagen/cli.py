@@ -25,7 +25,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     build = commands.add_parser("build", parents=[world], help="build a seeded world")
     build.add_argument("--variant", default="HI-Small", help="AMLworld variant, e.g. HI-Small")
     build.add_argument("--our-bank", default="12", help="AMLworld bank id that plays FinGuard")
-    build.add_argument("--raw-dir", type=Path, default=Path("data/raw/amlworld"))
+    build.add_argument(
+        "--raw-dir",
+        type=Path,
+        default=Path("data/raw"),
+        help="holds amlworld/ (Kaggle files) and opensanctions/ (targets.simple.csv files)",
+    )
 
     replay_command = commands.add_parser(
         "replay", parents=[world], help="stream a built world's transactions into tx.raw"

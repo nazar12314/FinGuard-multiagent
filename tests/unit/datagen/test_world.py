@@ -46,6 +46,7 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "customer_labels",
         "shared_attribute_labels",
         "company_labels",
+        "screening_labels",
     ]:
         assert (world / "ground_truth" / f"{name}.parquet").exists()
     accounts = pl.read_parquet(world / "accounts.parquet")
@@ -54,6 +55,10 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
     assert manifest["seed"] == 7
     assert manifest["our_bank"] == "12"
     assert manifest["fx_eur_per_unit"]["JPY"] == "0.007"
+    assert set(manifest["opensanctions_sha256"]) == {
+        "sanctions.targets.simple.csv",
+        "peps.targets.simple.csv",
+    }
     assert manifest["counts"] == {
         "transactions": 2,
         "accounts": 4,
@@ -98,7 +103,7 @@ def test_a_failed_build_keeps_the_previous_world(tmp_path: Path, raw_dir: Path) 
 
 
 def test_needs_the_pattern_file(tmp_path: Path, raw_dir: Path) -> None:
-    (raw_dir / "HI-Small_Patterns.txt").unlink()
+    (raw_dir / "amlworld" / "HI-Small_Patterns.txt").unlink()
 
     with pytest.raises(FileNotFoundError, match="Patterns"):
         build_world(WorldConfig(seed=7), raw_dir, tmp_path / "worlds")

@@ -139,7 +139,8 @@ FINGUARD_ENV=dev uv run finguard-contracts check-compatibility
 The generator in `datagen/` (its own workspace package, installed by `uv sync`) builds a seeded, deterministic world
 from the [IBM AMLworld dataset](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml).
 Download `HI-Small_Trans.csv`, `HI-Small_Patterns.txt` and `HI-Small_accounts.csv` from Kaggle into
-`data/raw/amlworld/`, then:
+`data/raw/amlworld/`, and the OpenSanctions files into `data/raw/opensanctions/` (see
+[Sanctions and PEP watchlist](#sanctions-and-pep-watchlist)), then:
 
 ```bash
 uv run finguard-datagen build --seed 42    # writes data/worlds/seed-42/
@@ -165,6 +166,7 @@ world keeps only the transactions an account at our bank is party to, since thos
 | `ground_truth/customer_labels.parquet` | Per customer: laundering-linked or not, and whether its profile fits its activity, doesn't (and why), or is an innocent look-alike |
 | `ground_truth/shared_attribute_labels.parquet` | Why an address or device is used by several customers: a laundering ring, or a virtual office, relatives or a bookkeeper |
 | `ground_truth/company_labels.parquet` | Per company: a plain structure, a shell-like one (offshore holding, nominee director, circular ownership) or an innocent look-alike |
+| `ground_truth/screening_labels.parquet` | Names planted close to real OpenSanctions entries: true matches (same birth date and nationality) and namesakes, with how each name was varied |
 | `manifest.json` | Seed, AMLworld variant, our bank, FX rates, their hash and row counts |
 
 Everything under `ground_truth/` is for evaluation only and never reaches the running system.
@@ -175,6 +177,12 @@ profile that doesn't fit their activity, and 10% of the others get an equally od
 profile alone never gives the label away. In the same way, customers in one laundering ring often share a device or an
 address, but far more innocent customers share one too. Half of the laundering-linked companies have a shell-like
 ownership structure; 8% of the others have one for an innocent reason, with nominee directors drawn from the same pool.
+
+Some people get a name close to a real sanctioned or politically exposed person: a different transliteration, the
+name order swapped, a middle name dropped or a typo. True matches, which take the listed birth date and nationality,
+fall mostly on people around laundering-linked customers; namesakes, born years apart, can be anyone. A few companies
+get a namesake of a listed organisation. OpenSanctions publishes daily, so the manifest records the hashes of the
+files a world was built from.
 
 ### Replaying a world into Kafka
 
