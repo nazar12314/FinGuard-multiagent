@@ -20,9 +20,8 @@ outbox = Table(
     "outbox",
     metadata,
     Column("id", Uuid, primary_key=True),
-    # Publishing order. Assigned at insert, so a writer that locks its aggregate before adding
-    # the message gets a position after every earlier committed message for that aggregate.
-    # created_at can't be used: now() is the transaction's start time, not its insert time.
+    # Publishing order, assigned at insert so it follows any lock the writer took first.
+    # Not created_at: now() is the transaction's start time.
     Column("position", BigInteger, Identity(always=True), nullable=False),
     Column("destination", Text, nullable=False),
     Column("key", Text, nullable=False),

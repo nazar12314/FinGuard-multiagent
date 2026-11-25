@@ -96,8 +96,7 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
 
 
 def install_exception_handlers(app: FastAPI) -> None:
-    # Unhandled exceptions are rendered by RequestContextMiddleware, which owns the
-    # request id and must log them.
+    # Unhandled exceptions are logged and rendered by RequestContextMiddleware.
     app.add_exception_handler(ApplicationError, _application_error)
     app.add_exception_handler(RequestValidationError, _request_validation_error)
     app.add_exception_handler(HTTPException, _http_error)

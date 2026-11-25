@@ -25,7 +25,7 @@ class Relay(Protocol):
 
 
 class RelayMustRestart(Exception):
-    """The relay can't make progress with its current connections."""
+    pass
 
 
 def retry_delay(consecutive_failures: int, settings: OutboxRelaySettings) -> float:
@@ -34,15 +34,12 @@ def retry_delay(consecutive_failures: int, settings: OutboxRelaySettings) -> flo
 
 
 def relay_heartbeat(settings: OutboxRelaySettings) -> Heartbeat:
-    # One loop round is at most a publish timeout and the longest retry wait, plus a few
-    # database round trips.
     return Heartbeat(stale_after_s=settings.publish_timeout_s + settings.max_retry_delay_s + 60)
 
 
 async def relay_until_stopped(
     relay: Relay, settings: OutboxRelaySettings, stop: asyncio.Event, heartbeat: Heartbeat
 ) -> None:
-    """Publish until `stop` is set. Raise RelayMustRestart when a fresh process is needed."""
     retention = timedelta(days=settings.retention_days)
     next_prune_at = next_measure_at = time.monotonic()
     consecutive_failures = 0
@@ -58,8 +55,7 @@ async def relay_until_stopped(
             else:
                 logger.info(LogEvent.OUTBOX_PRUNED, count=pruned)
 
-        # On a timer, not after each batch: counting the backlog reads every pending row,
-        # and it must keep updating while publishing fails, which is when it matters.
+        # On a timer, so the backlog keeps updating while publishing fails.
         if time.monotonic() >= next_measure_at:
             next_measure_at = time.monotonic() + settings.backlog_interval_s
             try:
@@ -82,7 +78,6 @@ async def relay_until_stopped(
             logger.error(LogEvent.OUTBOX_PUBLISH_TIMED_OUT, timeout_s=settings.publish_timeout_s)
             raise RelayMustRestart from timeout
         except Exception:
-            # Kafka or Postgres is unavailable: the messages stay pending and are retried.
             consecutive_failures += 1
             logger.exception(LogEvent.OUTBOX_PUBLISH_FAILED, attempt=consecutive_failures)
             if consecutive_failures >= settings.max_consecutive_failures:

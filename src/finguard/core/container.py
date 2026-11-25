@@ -30,7 +30,6 @@ from finguard.infrastructure.kafka.topics import subscribed_topics
 from finguard.infrastructure.outbox.relay import OutboxRelay
 from finguard.platform.topics import Topic
 
-# How long a consumer's producer may spend flushing retry and dead-letter copies on shutdown.
 _CONSUMER_PRODUCER_STOP_TIMEOUT_S = 10.0
 
 
@@ -49,10 +48,7 @@ def build_authenticator(settings: AuthSettings) -> Authenticator:
 
 
 async def build_api_container(settings: Settings, resources: AsyncExitStack) -> Container:
-    """
-    Wire the API process. Every client opened here is registered on `resources`,
-    which the caller owns, so it is closed even if a later step fails.
-    """
+    """Wire the API process. The caller owns `resources`, which closes every client opened here."""
     session_factory = open_session_factory(settings, resources)
     readiness = Readiness()
     readiness.require("database", partial(check_database, session_factory))
@@ -91,9 +87,6 @@ async def build_message_consumer(
     readiness: Readiness,
     heartbeat: Heartbeat,
 ) -> KafkaMessageConsumer:
-    """
-    Wire a consumer group named `name` for `topics`, including their retry topics.
-    """
     policy = _retry_policy(settings)
     session_factory = open_session_factory(settings, resources)
     producer = await _start_producer(settings, resources, _CONSUMER_PRODUCER_STOP_TIMEOUT_S)
@@ -121,7 +114,6 @@ async def build_message_consumer(
 
 
 def consumer_heartbeat(settings: Settings) -> Heartbeat:
-    # One poll may take as long as Kafka tolerates, plus handing a copy on and committing.
     policy = _retry_policy(settings)
     return Heartbeat(stale_after_s=policy.max_poll_interval_s + 60)
 
@@ -154,7 +146,7 @@ async def _start_producer(
     producer = create_kafka_producer(settings.kafka.bootstrap_servers)
 
     async def stop_producer() -> None:
-        # Stopping flushes queued messages, which never finishes while Kafka is unreachable.
+        # Flushing on stop never finishes while Kafka is unreachable.
         with suppress(TimeoutError):
             await asyncio.wait_for(producer.stop(), timeout=stop_timeout_s)
 

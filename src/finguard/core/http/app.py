@@ -27,7 +27,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info(LogEvent.APP_STARTING, env=settings.env, version=app_version)
-        async with AsyncExitStack() as resources:  # closes clients in reverse order of opening
+        async with AsyncExitStack() as resources:
             app.state.container = await container_factory(settings, resources)
             yield
         logger.info(LogEvent.APP_STOPPED)
@@ -45,7 +45,6 @@ def create_app(
     if settings.dev_endpoints_enabled:
         app.include_router(diagnostics.router)
     install_exception_handlers(app)
-    # One server span per request; the per-message receive and send spans are only noise.
     FastAPIInstrumentor.instrument_app(
         app,
         excluded_urls=_exact_paths(
@@ -57,6 +56,5 @@ def create_app(
 
 
 def _exact_paths(*paths: str) -> str:
-    # The instrumentation searches each pattern anywhere in the URL (scheme://host/path,
-    # without the query), so a bare "docs" would also hide /cases/docs.
+    # Patterns match anywhere in the URL, so a bare "docs" would also hide /cases/docs.
     return ",".join(rf"^[a-z]+://[^/]+{re.escape(path)}$" for path in paths)

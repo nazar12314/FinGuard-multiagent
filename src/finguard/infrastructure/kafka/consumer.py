@@ -40,8 +40,7 @@ ORIGIN_HEADER = "finguard-origin"
 
 logger = structlog.stdlib.get_logger(__name__)
 
-# outcome: handled, duplicate, ignored (another type or another group's copy), retried or
-# dead_lettered.
+# outcome: handled, duplicate, ignored, retried or dead_lettered.
 DELIVERIES = Counter(
     "finguard_consumer_deliveries", "Deliveries by outcome", ["consumer", "topic", "outcome"]
 )
@@ -80,7 +79,6 @@ class RetryPolicy:
     attempts: int
     attempt_backoff_s: float
     handler_timeout_s: float
-    # One delay per retry topic tier, after which the copy on that tier is handled again.
     retry_delays_s: tuple[float, ...]
 
     @property
@@ -90,14 +88,12 @@ class RetryPolicy:
 
     @property
     def max_poll_interval_s(self) -> float:
-        # The broker drops a consumer from the group if handling one message, retries
-        # included, takes longer than this between polls.
+        # The broker drops a consumer that goes longer than this between polls.
         return max(300.0, self.longest_handling_s + 60)
 
 
 def is_permanent(error: Exception) -> bool:
-    # A business-rule outcome or malformed data comes out the same however often it is
-    # retried; only a dependency outage is worth another attempt among application errors.
+    # Retrying can't change a business-rule outcome or bad data; only outages are worth it.
     if isinstance(error, ValidationError):
         return True
     return isinstance(error, ApplicationError) and not isinstance(error, DependencyUnavailable)
@@ -126,21 +122,15 @@ def create_kafka_consumer(
         *topics,
         bootstrap_servers=bootstrap_servers,
         group_id=group_id,
-        # Offsets are committed only after a message is handled or handed on.
+        # Committed only once a message is handled or handed on.
         enable_auto_commit=False,
-        # A new consumer group starts from the oldest retained message, so nothing is missed.
         auto_offset_reset="earliest",
         max_poll_interval_ms=int(policy.max_poll_interval_s * 1000),
     )
 
 
 class KafkaMessageConsumer:
-    """Runs handlers for the envelope types it knows, at least once and in order per key.
-
-    A failing handler is retried in place, then moved through the retry topic tiers, then
-    to the dead-letter topic. Permanent errors and malformed messages go straight there.
-    Messages of other types are skipped.
-    """
+    """Runs handlers at least once and in order per key; see ADR 002 for the retry tiers."""
 
     def __init__(
         self,
@@ -166,17 +156,14 @@ class KafkaMessageConsumer:
         self._lag_measured_at = 0.0
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Consume until `stop` is set. Raises if a copy can't be handed on to Kafka;
-        the offset isn't committed then, so the message is redelivered after a restart.
-        """
+        """Raises if a copy can't be handed on; the message is then redelivered on restart."""
         self._stop = stop
         while not stop.is_set():
             self._heartbeat()
             self._resume_due_partitions()
             if time.monotonic() - self._lag_measured_at >= _LAG_INTERVAL_S:
                 await self._measure_lag()
-            # One record per poll, so max.poll.interval.ms only has to cover handling one
-            # message. aiokafka still fetches ahead in the background.
+            # One record per poll, so max.poll.interval.ms only covers handling one message.
             batches = await self._consumer.getmany(timeout_ms=200, max_records=1)
             for partition, records in batches.items():
                 for record in records:
@@ -186,8 +173,7 @@ class KafkaMessageConsumer:
                         return
 
     async def _consume(self, partition: TopicPartition, record: Any) -> None:
-        # Kafka can take the partition away during any await (a rebalance). Calls without
-        # an await in between see a stable assignment.
+        # A rebalance can revoke the partition during any await, but not between them.
         if not self._owns(partition):
             return
         if not self._addressed_to_us(record):
@@ -196,8 +182,7 @@ class KafkaMessageConsumer:
             return
         due_at = self._due_at(record)
         if due_at > time.time():
-            # Not due yet: rewind and pause this partition instead of sleeping, so the
-            # other partitions keep flowing and the consumer keeps polling.
+            # Pause rather than sleep, so other partitions keep flowing.
             self._consumer.seek(partition, record.offset)
             self._consumer.pause(partition)
             self._paused_until[partition] = due_at
@@ -223,7 +208,6 @@ class KafkaMessageConsumer:
             except _Stopping:
                 raise
             except Exception as error:
-                # Handing a copy on failed, so the message stays uncommitted.
                 record_failure(span, error)
                 raise
         await self._commit(partition, record)
@@ -257,8 +241,7 @@ class KafkaMessageConsumer:
         try:
             await self._consumer.commit({partition: record.offset + 1})
         except (CommitFailedError, IllegalStateError):
-            # The partition moved to another consumer, which receives this message again;
-            # the inbox makes that harmless.
+            # The new owner gets this message again; the inbox makes that harmless.
             logger.info(
                 ConsumerEvent.COMMIT_LOST_TO_REBALANCE,
                 topic=record.topic,
@@ -364,7 +347,6 @@ class KafkaMessageConsumer:
                 record_failure(span, error)
                 permanent = is_permanent(error)
                 HANDLER_FAILURES.labels(self._name, envelope.type, str(permanent).lower()).inc()
-                # Logged inside the attempt's span, so the line points at the failed attempt.
                 logger.warning(
                     ConsumerEvent.HANDLER_FAILED,
                     message_id=str(envelope.id),
@@ -378,7 +360,6 @@ class KafkaMessageConsumer:
 
     async def _hand_on(self, record: Any, topic: str, error: Exception) -> None:
         own_headers = dict(record.headers)
-        # Where the message was first delivered, kept unchanged across retry tiers.
         origin: bytes = own_headers.get(ORIGIN_HEADER) or (
             f"{record.topic}:{record.partition}:{record.offset}".encode()
         )
@@ -392,7 +373,6 @@ class KafkaMessageConsumer:
             (ERROR_HEADER, describe_error(error)[:1000].encode()),
             (ORIGIN_HEADER, origin),
         ]
-        # The copy continues the trace from this delivery, so retries appear as a chain.
         if traceparent := current_traceparent():
             headers.append(("traceparent", traceparent.encode()))
         trace.get_current_span().add_event("handed_on", {"messaging.destination.name": topic})

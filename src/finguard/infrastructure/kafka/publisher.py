@@ -9,8 +9,7 @@ from aiokafka.errors import (
     TopicAuthorizationFailedError,
 )
 
-# Errors caused by the message itself, which no retry or fresh producer can fix. Other
-# non-retriable errors (a timeout, a broken producer sequence) are not the message's fault.
+# Errors caused by the message itself, which no retry or fresh producer can fix.
 _REJECTIONS = (
     InvalidTopicError,
     MessageSizeTooLargeError,

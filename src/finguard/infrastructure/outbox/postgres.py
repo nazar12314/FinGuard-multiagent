@@ -28,19 +28,15 @@ class PostgresOutbox:
         self._topics = topics
 
     async def add(self, envelope: Envelope, *, topic: str, key: str) -> None:
-        # The broker doesn't create topics on first use, so a message for an unknown topic
-        # would hold up the relay; refuse it while the writer can still roll back.
+        # Refused here, while the writer can still roll back, instead of parking in the relay.
         if topic not in self._topics:
             raise ValidationFailed(f"unknown topic {topic!r} for message {envelope.id}")
-        # Refusing here fails the writer's own transaction, instead of parking the message
-        # in the relay after the state change has already committed.
         size = len(envelope.model_dump_json().encode())
         if size > self._max_message_bytes:
             raise ValidationFailed(
                 f"message {envelope.id} is {size} bytes, over the {self._max_message_bytes} limit"
             )
         payload = envelope.model_dump(mode="json")
-        # The relay continues this trace when it publishes, however much later that is.
         if payload["traceparent"] is None:
             payload["traceparent"] = current_traceparent()
         await self._session.execute(
@@ -53,9 +49,8 @@ class PostgresInbox:
         self._session = session
 
     async def try_mark_processed(self, message_id: UUID, consumer: str) -> bool:
-        # A parallel duplicate waits on the primary key until the first transaction ends.
-        # If that one committed, the duplicate inserts nothing and gets False; if it rolled
-        # back, the duplicate takes over and gets True.
+        # A parallel duplicate blocks on the primary key, then gets False if the first
+        # delivery committed, or True if it rolled back.
         statement = (
             pg_insert(inbox)
             .values(message_id=message_id, consumer=consumer)

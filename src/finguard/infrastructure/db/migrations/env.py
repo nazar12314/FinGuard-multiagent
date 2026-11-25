@@ -28,8 +28,7 @@ async def run_async_migrations() -> None:
     await engine.dispose()
 
 
-# A caller that is already inside an event loop passes its own connection instead
-# (`await connection.run_sync(...)`), since asyncio.run can't be nested.
+# A caller already in an event loop passes a connection, since asyncio.run can't nest.
 if (connection := attributes.get("connection")) is not None:
     run_migrations(connection)
 else:

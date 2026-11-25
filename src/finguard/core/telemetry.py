@@ -27,11 +27,7 @@ _TARGETS = frozenset({"http.target"})
 
 
 class WithoutClientDetails(SpanProcessor):
-    """Hands each finished span on without the request's query string or client address.
-
-    The HTTP instrumentation sets these attributes itself, and a span can't drop an
-    attribute once set, so they are removed from a copy just before export.
-    """
+    """Removes query strings and client addresses from a copy, since spans can't unset them."""
 
     def __init__(self, export: SpanProcessor) -> None:
         self._export = export
@@ -78,10 +74,7 @@ class WithoutClientDetails(SpanProcessor):
 
 
 def configure_telemetry(settings: Settings, *, process: str) -> Callable[[], None]:
-    """Export this process's spans to the OpenTelemetry Collector when telemetry is enabled.
-
-    Returns the function that flushes pending spans; call it when the process stops.
-    """
+    """Return the function that flushes pending spans; call it when the process stops."""
     if not settings.telemetry.enabled:
         return lambda: None
 

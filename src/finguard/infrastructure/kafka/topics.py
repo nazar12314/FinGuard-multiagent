@@ -20,8 +20,7 @@ class TopicCreationFailed(Exception):
 @dataclass(frozen=True, slots=True)
 class EnsuredTopics:
     created: list[str]
-    # Existing topics whose partition count differs from the catalog, as (actual, declared).
-    # Not changed automatically: adding partitions moves keys and breaks per-key order.
+    # (actual, declared). Never fixed automatically, since that would break per-key order.
     partition_mismatches: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 

@@ -15,9 +15,7 @@ MIGRATIONS = "finguard.infrastructure.db:migrations"
 def alembic_config(database_url: str) -> Config:
     config = Config()
     config.set_main_option("script_location", MIGRATIONS)
-    # Passed as attributes rather than ini options, which would treat a "%" in a
-    # URL-encoded password as interpolation. Migrations live in infrastructure, which may
-    # not import the modules that own tables, so the metadata comes from here too.
+    # Not ini options, which would read a "%" in a URL-encoded password as interpolation.
     config.attributes["database_url"] = database_url
     config.attributes["target_metadata"] = metadata
     return config

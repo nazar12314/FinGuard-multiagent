@@ -4,8 +4,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class Topic:
     name: str
-    # Chosen up front: adding partitions later moves keys to other partitions, which
-    # breaks per-key ordering while old and new messages are both in flight.
+    # Fixed up front: adding partitions later moves keys and breaks per-key order.
     partitions: int = 6
 
 
@@ -19,7 +18,7 @@ DOCUMENTS_PARSED = Topic("documents.parsed")
 # Dev-only pings that exercise the outbox, relay and consumer runtime end to end.
 DIAGNOSTICS_PINGS = Topic("diagnostics.pings", partitions=1)
 
-# Every topic FinGuard publishes to. The per-agent task topics join once the agent types exist.
+# The per-agent task topics join once the agent types exist.
 TOPICS = (
     TX_RAW,
     TX_NORMALIZED,

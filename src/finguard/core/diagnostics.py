@@ -69,8 +69,7 @@ class PingStatus(BaseModel):
 
 def ping_handler(failure_log: async_sessionmaker[AsyncSession]) -> MessageHandler:
     async def handle(envelope: Envelope, session: AsyncSession) -> None:
-        # The runtime marks the message in the inbox before calling this, so two deliveries
-        # of one ping run one after the other and the second sees the first's failures.
+        # The inbox mark serialises deliveries, so a redelivery sees earlier failures.
         request = PingRequest.model_validate(envelope.data)
         failures = await session.scalar(
             select(func.count())
@@ -105,8 +104,7 @@ async def load_ping_status(session: AsyncSession, ping_id: UUID) -> PingStatus |
             select(outbox.c.published_at, outbox.c.failed_at).where(outbox.c.id == ping_id)
         )
     ).first()
-    # Attempts before the inbox: a success committing in between then shows as "handled"
-    # with a lagging attempts list, never as unhandled with a successful attempt.
+    # Read before the inbox, so a commit in between can't show a success as unhandled.
     attempts = (
         await session.execute(
             select(ping_attempts.c.attempted_at, ping_attempts.c.error, ping_attempts.c.permanent)
@@ -146,11 +144,7 @@ async def load_ping_status(session: AsyncSession, ping_id: UUID) -> PingStatus |
 
 
 def ping_state(*, outbox_state: OutboxState, handled: bool, failures: Sequence[bool]) -> PingState:
-    """The state the records show, given the failed attempts in order, each flagged permanent.
-
-    Only facts: which retry topic a failing ping waits on, or whether it ran out of retries,
-    is left to the consumer's log, since it depends on restarts and rebalances.
-    """
+    """Each entry in `failures` says whether that attempt failed permanently."""
     if handled:
         return "handled"
     if outbox_state != "published":

@@ -5,16 +5,14 @@ from pathlib import Path
 from finguard.core.diagnostics import PING_REQUESTED_CONTRACT
 from finguard.platform.contracts import MessageContract, message_schema
 
-# Every message FinGuard publishes. A module adds its contracts here when it starts producing.
+# A module adds its contracts here when it starts publishing.
 CONTRACTS: tuple[MessageContract, ...] = (PING_REQUESTED_CONTRACT,)
 
-# Subjects (`<type>.v<version>`) no longer produced. Removing a contract must be declared
-# here: consumers can still meet its messages in topics and retry tiers until they expire.
+# Subjects no longer produced; their messages stay in topics until retention expires.
 RETIRED: frozenset[str] = frozenset()
 
 
 def render(contracts: Iterable[MessageContract]) -> dict[str, str]:
-    """The contract files by name, in a stable layout so regenerating changes nothing."""
     return {
         f"{contract.subject}.json": json.dumps(message_schema(contract), indent=2, sort_keys=True)
         + "\n"
@@ -23,7 +21,7 @@ def render(contracts: Iterable[MessageContract]) -> dict[str, str]:
 
 
 def write(directory: Path, contracts: Iterable[MessageContract]) -> list[str]:
-    """Bring the schema files in `directory` in line with `contracts`. Return what changed."""
+    """Return the names of the files that changed."""
     expected = render(contracts)
     changed = []
     for name in sorted(_schema_files(directory) - expected.keys()):
@@ -52,12 +50,10 @@ def stale(directory: Path, contracts: Iterable[MessageContract]) -> list[str]:
 def removed_without_retiring(
     base: Path, contracts: Iterable[MessageContract], retired: frozenset[str]
 ) -> list[str]:
-    """Subjects that `base` has a file for, but which are neither contracts nor retired."""
     return sorted(read(base).keys() - {contract.subject for contract in contracts} - retired)
 
 
 def read(directory: Path) -> dict[str, str]:
-    """The schemas in `directory` by registry subject (the file name without `.json`)."""
     return {
         name.removesuffix(".json"): (directory / name).read_text()
         for name in sorted(_schema_files(directory))

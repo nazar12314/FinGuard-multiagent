@@ -23,8 +23,7 @@ class PingAccepted(BaseModel):
     status_url: str
 
 
-# Any authenticated caller may ping. Asking for a principal now means the routes are
-# protected once real authentication replaces the dev stub.
+# Requiring a principal keeps these routes protected once real auth replaces the dev stub.
 @router.post("", status_code=202)
 async def send_ping(
     request: PingRequest, container: ContainerDep, principal: CurrentPrincipal

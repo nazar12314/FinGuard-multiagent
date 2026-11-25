@@ -20,12 +20,10 @@ OPS_PATHS = frozenset({"/healthz", "/readyz", "/metrics"})
 
 
 class Readiness:
-    """The dependencies a process needs before it should be given work."""
-
     def __init__(self, *, timeout_s: float = 2.0) -> None:
         self._checks: dict[str, ReadinessCheck] = {}
         self._timeout_s = timeout_s
-        # Set on SIGTERM, so the orchestrator stops sending work while the process drains.
+        # Set on SIGTERM, so no new work arrives while the process drains.
         self.draining = False
 
     def require(self, name: str, check: ReadinessCheck) -> None:
@@ -51,11 +49,7 @@ class Readiness:
 
 
 class Heartbeat:
-    """Shows that a worker's main loop still goes round, not just that its event loop runs.
-
-    A worker stuck in an await answers HTTP but stops beating, so liveness fails and the
-    orchestrator restarts it.
-    """
+    """Liveness for a worker stuck in an await, which still answers HTTP but stops beating."""
 
     def __init__(self, *, stale_after_s: float) -> None:
         self._stale_after_s = stale_after_s
@@ -105,7 +99,7 @@ def ops_routes(
 class _ServerWithoutSignals(uvicorn.Server):
     @contextlib.contextmanager
     def capture_signals(self) -> Iterator[None]:
-        # The process's own SIGTERM handler drives shutdown and stops this server too.
+        # The process's own SIGTERM handler stops this server.
         yield
 
 
@@ -125,8 +119,7 @@ class OpsServer:
         self._task = asyncio.create_task(self._server.serve())
         while not self._server.started:
             if self._task.done():
-                # uvicorn logs a failure to bind the port and raises SystemExit(1) in the
-                # task; awaiting it re-raises that, which ends the process.
+                # Re-raises uvicorn's SystemExit(1) from a failed bind.
                 await self._task
             await asyncio.sleep(0.01)
 

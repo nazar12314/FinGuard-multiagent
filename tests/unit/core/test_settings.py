@@ -63,7 +63,6 @@ def test_prod_accepts_explicit_connection_settings(monkeypatch: pytest.MonkeyPat
     with pytest.raises(ValidationError) as error:
         Settings(env="prod")
 
-    # Only the dev auth stub is left, until JWT authentication exists.
     assert "must be set explicitly" not in str(error.value)
     assert "dev_header" in str(error.value)
 

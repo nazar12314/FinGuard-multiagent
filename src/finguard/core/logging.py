@@ -56,15 +56,13 @@ def redact(value: Any, key: str | None = None) -> Any:
 def _redact_secrets(
     _: Any, __: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
-    # "event" is never masked by name, but stdlib messages carry formatted arguments,
-    # so its text is still scrubbed.
+    # stdlib messages carry formatted arguments, so the event text is scrubbed too.
     return {k: redact(v) if k == "event" else redact(v, k) for k, v in event_dict.items()}
 
 
 def _add_trace_ids(
     _: Any, __: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
-    # Lets a log line be looked up as a trace, and a trace's spans be matched to their logs.
     context = trace.get_current_span().get_span_context()
     if context.is_valid:
         event_dict["trace_id"] = format(context.trace_id, "032x")
@@ -74,8 +72,7 @@ def _add_trace_ids(
 
 def configure_logging(settings: Settings, stream: TextIO | None = None) -> None:
     """Send structlog and stdlib logging (uvicorn, libraries) through one renderer."""
-    # Tracebacks are rendered without frame locals, which would otherwise log DSNs and
-    # keys held in variables, and before redaction, so secrets in messages get masked.
+    # No frame locals (they hold DSNs and keys), and rendered before redaction runs.
     exception_renderer: structlog.types.Processor
     renderer: structlog.types.Processor
     if settings.log_format == "json":

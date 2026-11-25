@@ -354,7 +354,6 @@ async def test_the_writers_trace_continues_through_the_relay_into_kafka(
     assert publish.parent is not None
     assert publish.parent.span_id == request.context.span_id
     [record] = await read_topic(topic, 1)
-    # The header carries the publish span; the payload keeps the writer's context.
     assert ids(dict(record.headers)["traceparent"].decode()) == (
         publish.context.trace_id,
         publish.context.span_id,

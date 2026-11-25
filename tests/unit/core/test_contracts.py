@@ -62,7 +62,6 @@ def test_a_message_schema_pins_the_type_and_version_and_describes_its_data() -> 
     assert schema["properties"]["version"]["const"] == 2
     assert schema["properties"]["data"] == {"$ref": "#/$defs/Note"}
     assert schema["$defs"]["Note"]["required"] == ["text"]
-    # Producers always send every envelope field, so consumers may rely on them.
     assert set(schema["required"]) == {
         "id",
         "type",
@@ -76,7 +75,6 @@ def test_a_message_schema_pins_the_type_and_version_and_describes_its_data() -> 
 
 
 def test_a_message_schema_names_the_draft_the_registry_must_read_it_as() -> None:
-    # Read as draft 4, exclusive bounds break the registry's checks and const is ignored.
     assert message_schema(NOTE_CONTRACT)["$schema"] == "http://json-schema.org/draft-07/schema#"
 
 

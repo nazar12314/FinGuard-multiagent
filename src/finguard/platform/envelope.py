@@ -10,12 +10,7 @@ MESSAGE_TYPE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
 
 class Envelope(BaseModel):
-    """Wrapper for every Kafka message.
-
-    Consumers deduplicate on `id`. Envelopes are keyed on it and never hashed, because
-    `data` is a plain dict. Unknown top-level fields are ignored, so the envelope can gain
-    fields without breaking consumers that haven't been upgraded yet.
-    """
+    """Consumers deduplicate on `id`; unknown fields are ignored, so the envelope can grow."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -25,8 +20,7 @@ class Envelope(BaseModel):
     occurred_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     correlation_id: UUID
     causation_id: UUID | None = None
-    # Left unvalidated: the OpenTelemetry propagator parses it and drops invalid values,
-    # and a malformed trace header must never send a business message to the DLQ.
+    # Unvalidated: a malformed trace header must never send a message to the DLQ.
     traceparent: str | None = None
     data: dict[str, JsonValue]
 
@@ -45,8 +39,7 @@ class Envelope(BaseModel):
         version: int = 1,
         traceparent: str | None = None,
     ) -> Self:
-        # A message that starts a flow and has no case to correlate with
-        # becomes the flow's correlation root itself.
+        # A message that starts a flow is its own correlation root.
         message_id = new_id()
         return cls(
             id=message_id,
@@ -66,8 +59,7 @@ class Envelope(BaseModel):
         version: int = 1,
         traceparent: str | None = None,
     ) -> Self:
-        # Pass correlation_id to re-scope the chain, e.g. to the case id once an alert
-        # opens a case; the causation link back to the alert is kept either way.
+        # Pass correlation_id to re-scope the chain, e.g. to a case id once an alert opens one.
         return self.__class__(
             type=type,
             version=version,

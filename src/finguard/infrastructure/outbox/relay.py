@@ -29,10 +29,9 @@ PARKED = Counter("finguard_outbox_parked", "Messages Kafka refused for good", ["
 
 @cache
 def _backlog_gauges() -> tuple[Gauge, Gauge]:
-    # Created on first use: every process imports this module, but only the relay measures
-    # the backlog, and unlabelled gauges would otherwise report 0 from all of them.
+    # Lazy, or every process importing this module would report a backlog of 0.
     pending = Gauge("finguard_outbox_pending_messages", "Messages waiting in the outbox")
-    # Grows while publishing is stuck, so it's the signal to alert on rather than the count.
+    # The signal to alert on: it grows while publishing is stuck.
     oldest_age = Gauge(
         "finguard_outbox_oldest_pending_age_seconds",
         "Age of the oldest message waiting in the outbox",
@@ -69,15 +68,9 @@ class OutboxRelay:
         self._publish_timeout_s = publish_timeout_s
 
     async def publish_pending(self) -> int:
-        """Publish the oldest pending messages in order and mark them sent. Return how many.
+        """Return how many were published; 0 while another relay holds the lock.
 
-        Only one relay publishes at a time, which keeps per-key order. If another relay
-        holds the lock, this returns 0 without reading anything. A crash between publishing
-        and committing re-sends the batch, which consumers deduplicate.
-
-        Raises TimeoutError when the batch takes longer than the publish timeout, and
-        MessageParked after setting aside a message Kafka refused. The producer may be
-        unusable after either, so the caller should start a fresh one.
+        After TimeoutError or MessageParked the producer may be unusable; start a fresh one.
         """
         parked: MessageParked | None = None
         async with self._session_factory.begin() as session:
@@ -94,8 +87,7 @@ class OutboxRelay:
                 )
             ).all()
 
-            # One message at a time, so a refused message is known exactly and the ones
-            # before it count as sent.
+            # One at a time, so the messages before a refused one count as sent.
             published: list[tuple[UUID, str]] = []
             async with asyncio.timeout(self._publish_timeout_s):
                 for row in rows:
@@ -177,8 +169,7 @@ class OutboxRelay:
 def _to_outgoing(
     topic: str, key: str, envelope: Mapping[str, Any], *, traceparent: str | None
 ) -> OutgoingMessage:
-    # The header carries the send span, so the consumer's span becomes its child and can
-    # start before the payload is parsed. The payload keeps the writer's context.
+    # The header carries the send span, so the consumer's span can start before parsing.
     return OutgoingMessage(
         topic=topic,
         key=key,

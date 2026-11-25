@@ -9,11 +9,7 @@ from finguard.platform.envelope import Envelope
 
 @dataclass(frozen=True, slots=True)
 class MessageContract:
-    """One message type at one version, described by the model of its `data`.
-
-    A breaking change to `data` needs a new version, which is a new contract with its own
-    schema subject; within a version only backward-compatible changes are allowed.
-    """
+    """A breaking change to `data` needs a new version, which is a new contract."""
 
     message_type: str
     version: int
@@ -25,15 +21,12 @@ class MessageContract:
 
 
 class _OnTheWire(Envelope):
-    # Producers always send every envelope field, defaults included, and consumers rely on
-    # them (`id` for deduplication). The fields of `data` keep their own optionality, so
-    # adding an optional field there stays a backward-compatible change.
+    # Producers always send every envelope field and consumers rely on them; `data` fields
+    # keep their own optionality, so adding an optional one stays compatible.
     model_config = ConfigDict(json_schema_serialization_defaults_required=True)
 
 
-# Apicurio reads a schema that names no draft as draft 4, where exclusiveMinimum is a flag
-# and const doesn't exist, so it misjudges both. Pydantic's output is draft 7 apart from
-# $defs, which references reach by JSON pointer anyway, and prefixItems, which is refused.
+# Apicurio reads a schema with no draft as draft 4 and misjudges exclusive bounds and const.
 JSON_SCHEMA_DRAFT = "http://json-schema.org/draft-07/schema#"
 
 # Keywords whose values are data, not schemas.
@@ -46,7 +39,6 @@ def message_schema(contract: MessageContract) -> dict[str, Any]:
     message = create_model(
         contract.data.__name__ + "Message",
         __base__=_OnTheWire,
-        # The literals pin the envelope's type and version to this contract.
         type=(cast(Any, Literal)[contract.message_type], ...),
         version=(cast(Any, Literal)[contract.version], contract.version),
         data=(contract.data, ...),
@@ -57,17 +49,14 @@ def message_schema(contract: MessageContract) -> dict[str, Any]:
 
 
 def _check_comparable(contract: MessageContract) -> None:
-    """Refuse data models whose changes the registry can't judge correctly."""
     for schema in _subschemas(contract.data.model_json_schema(mode="serialization")):
-        # Under the registry's rules an open object can't gain a field compatibly: old data
-        # might already carry that name with any type. A closed model can add optional fields.
+        # An open object can't gain a field compatibly: old data may hold it with any type.
         if "properties" in schema and schema.get("additionalProperties") is not False:
             raise ValueError(
                 f"{contract.subject}: {schema.get('title', 'a nested model')} must set"
                 " extra='forbid'"
             )
-        # Draft 7 doesn't know prefixItems, so retyping a tuple element would pass as
-        # compatible.
+        # Draft 7 has no prefixItems, so a retyped tuple element would pass as compatible.
         if "prefixItems" in schema:
             raise ValueError(
                 f"{contract.subject}: fixed-length tuples can't be checked for compatibility;"
