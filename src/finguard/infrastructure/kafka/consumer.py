@@ -54,10 +54,13 @@ HANDLING_DURATION = Histogram(
     "finguard_consumer_handling_seconds",
     "Time to handle one delivery, in-place retries included",
     ["consumer", "message_type"],
+    # Up to several handler timeouts (60 s each by default) plus backoff.
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
 )
 LAG = Gauge(
     "finguard_consumer_lag",
-    "Messages between the consumer's position and the end of the partition",
+    "Messages between the consumer's position and the end of the partition. On retry"
+    " topics this includes copies still waiting out their delay.",
     ["consumer", "topic", "partition"],
 )
 _LAG_INTERVAL_S = 5.0
@@ -235,7 +238,12 @@ class KafkaMessageConsumer:
             end = self._consumer.highwater(partition)
             if end is None:
                 continue  # nothing fetched from this partition yet
-            position = await self._consumer.position(partition)
+            try:
+                position = await self._consumer.position(partition)
+            except IllegalStateError:
+                continue  # revoked by a rebalance during an earlier await
+            if not self._owns(partition):
+                continue  # revoked while its position was fetched; dropped next round
             LAG.labels(self._name, partition.topic, str(partition.partition)).set(
                 max(end - position, 0)
             )

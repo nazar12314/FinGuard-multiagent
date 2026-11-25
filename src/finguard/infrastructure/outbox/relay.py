@@ -96,7 +96,7 @@ class OutboxRelay:
 
             # One message at a time, so a refused message is known exactly and the ones
             # before it count as sent.
-            published: list[UUID] = []
+            published: list[tuple[UUID, str]] = []
             async with asyncio.timeout(self._publish_timeout_s):
                 for row in rows:
                     with tracer.start_as_current_span(
@@ -124,7 +124,6 @@ class OutboxRelay:
                             )
                         except MessageRejected as rejection:
                             record_failure(span, rejection)
-                            PARKED.labels(row.destination).inc()
                             parked = MessageParked(row.id, row.destination, str(rejection))
                             await session.execute(
                                 update(outbox)
@@ -136,15 +135,20 @@ class OutboxRelay:
                         except (Exception, asyncio.CancelledError) as error:
                             record_failure(span, error)
                             raise
-                    PUBLISHED.labels(row.destination).inc()
-                    published.append(row.id)
+                    published.append((row.id, row.destination))
 
             if published:
                 await session.execute(
-                    update(outbox).where(outbox.c.id.in_(published)).values(published_at=func.now())
+                    update(outbox)
+                    .where(outbox.c.id.in_([message_id for message_id, _ in published]))
+                    .values(published_at=func.now())
                 )
 
+        # Counted once committed: a failed commit leaves the messages pending, to be sent again.
+        for _, topic in published:
+            PUBLISHED.labels(topic).inc()
         if parked:
+            PARKED.labels(parked.topic).inc()
             raise parked
         return len(published)
 

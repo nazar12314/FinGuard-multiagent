@@ -4,7 +4,8 @@ from uuid import uuid4
 import pytest
 from aiokafka.admin import NewTopic
 from prometheus_client import REGISTRY
-from sqlalchemy import func, text, update
+from sqlalchemy import func, select, text, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finguard.core.ops import Readiness
@@ -15,6 +16,7 @@ from finguard.infrastructure.db.engine import (
 )
 from finguard.infrastructure.kafka.publisher import (
     KafkaPublisher,
+    OutgoingMessage,
     check_kafka,
     create_kafka_producer,
 )
@@ -98,3 +100,46 @@ async def test_the_outbox_backlog_and_its_age_are_measured(
     assert REGISTRY.get_sample_value("finguard_outbox_published_total", {"topic": topic}) == 2
     assert REGISTRY.get_sample_value("finguard_outbox_pending_messages") == 0
     assert REGISTRY.get_sample_value("finguard_outbox_oldest_pending_age_seconds") == 0
+
+
+class PublisherThatLosesTheTransaction:
+    """Publishes, then ends the relay's database session, so the relay's commit fails."""
+
+    def __init__(self, session_factory: SessionFactory) -> None:
+        self._session_factory = session_factory
+
+    async def publish(self, message: OutgoingMessage) -> None:
+        async with self._session_factory() as session:
+            await session.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"
+                    " WHERE state = 'idle in transaction' AND pid <> pg_backend_pid()"
+                )
+            )
+
+
+async def test_messages_are_counted_as_published_only_once_committed(
+    session_factory: SessionFactory, create_topics: CreateTopics
+) -> None:
+    topic = f"test.ops.{uuid4().hex}"
+    await create_topics(NewTopic(topic, 1, 1))
+    async with session_factory.begin() as session:
+        await PostgresOutbox(session, topics={topic}).add(
+            Envelope.new("cases.case.opened", {}), topic=topic, key="case-1"
+        )
+    relay = OutboxRelay(
+        session_factory,
+        PublisherThatLosesTheTransaction(session_factory),
+        batch_size=10,
+        publish_timeout_s=10,
+    )
+
+    with pytest.raises(DBAPIError):
+        await relay.publish_pending()
+
+    assert REGISTRY.get_sample_value("finguard_outbox_published_total", {"topic": topic}) is None
+    async with session_factory() as session:
+        pending = await session.scalar(
+            select(func.count()).select_from(outbox).where(outbox.c.published_at.is_(None))
+        )
+    assert pending == 1

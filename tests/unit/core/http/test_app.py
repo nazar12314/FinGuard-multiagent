@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind
+from prometheus_client import REGISTRY
 
 from finguard.core.container import Container, build_api_container
 from finguard.core.http.app import create_app
@@ -309,3 +310,14 @@ def test_only_the_docs_paths_themselves_go_untraced(spans: InMemorySpanExporter)
         client.get("/cases/docs")
 
     assert [span.name for span in spans.get_finished_spans()] == ["GET /cases/docs"]
+
+
+def test_unusual_http_methods_share_one_metric_series(client: TestClient) -> None:
+    client.request("PROPFIND", "/ok")
+    client.request("BREW", "/ok")
+
+    sample = REGISTRY.get_sample_value(
+        "finguard_http_requests_total", {"method": "other", "route": "/ok", "status": "405"}
+    )
+    assert sample is not None
+    assert sample >= 2
