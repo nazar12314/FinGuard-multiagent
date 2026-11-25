@@ -6,7 +6,9 @@ requires-python = ">=3.12"
 dependencies = [
     "faker>=40.63.0",
     "finguard",
+    "jinja2>=3.1.6",
     "polars>=2.2.0",
+    "weasyprint>=70.0",
 ]
 
 [project.scripts]

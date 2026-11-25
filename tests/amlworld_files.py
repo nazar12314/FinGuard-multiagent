@@ -106,4 +106,4 @@ def write_raw_files(
 def build_small_world(directory: Path, rows: list[str]) -> Path:
     raw = directory / "raw"
     write_raw_files(raw, rows)
-    return build_world(WorldConfig(seed=1), raw, directory / "worlds")
+    return build_world(WorldConfig(seed=1, documents=False), raw, directory / "worlds")

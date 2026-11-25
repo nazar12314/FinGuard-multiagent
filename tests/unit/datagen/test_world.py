@@ -22,7 +22,7 @@ def raw_dir(tmp_path: Path) -> Path:
 
 
 def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) -> None:
-    world = build_world(WorldConfig(seed=7), raw_dir, tmp_path / "worlds")
+    world = build_world(WorldConfig(seed=7, documents=False), raw_dir, tmp_path / "worlds")
 
     assert world == tmp_path / "worlds" / "seed-7"
     assert pl.read_parquet(world / "transactions.parquet").height == 2
@@ -68,6 +68,7 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "laundering_attempts": 1,
         "customers": 2,
         "laundering_linked_customers": 1,
+        "documents": manifest["counts"]["documents"],
     }
 
 
@@ -76,28 +77,28 @@ def test_the_config_hash_changes_with_the_config(tmp_path: Path, raw_dir: Path) 
         world = build_world(config, raw_dir, tmp_path / "worlds")
         return str(json.loads((world / "manifest.json").read_text())["config_hash"])
 
-    first = config_hash(WorldConfig(seed=7))
+    first = config_hash(WorldConfig(seed=7, documents=False))
 
-    assert config_hash(WorldConfig(seed=7)) == first
-    assert config_hash(WorldConfig(seed=8)) != first
-    assert config_hash(WorldConfig(seed=7, our_bank="001")) != first
+    assert config_hash(WorldConfig(seed=7, documents=False)) == first
+    assert config_hash(WorldConfig(seed=8, documents=False)) != first
+    assert config_hash(WorldConfig(seed=7, our_bank="001", documents=False)) != first
 
 
 def test_rebuilding_replaces_the_previous_world(tmp_path: Path, raw_dir: Path) -> None:
-    world = build_world(WorldConfig(seed=7), raw_dir, tmp_path / "worlds")
+    world = build_world(WorldConfig(seed=7, documents=False), raw_dir, tmp_path / "worlds")
     (world / "left_over.parquet").write_text("stale")
 
-    build_world(WorldConfig(seed=7), raw_dir, tmp_path / "worlds")
+    build_world(WorldConfig(seed=7, documents=False), raw_dir, tmp_path / "worlds")
 
     assert not (world / "left_over.parquet").exists()
     assert (world / "transactions.parquet").exists()
 
 
 def test_a_failed_build_keeps_the_previous_world(tmp_path: Path, raw_dir: Path) -> None:
-    world = build_world(WorldConfig(seed=7), raw_dir, tmp_path / "worlds")
+    world = build_world(WorldConfig(seed=7, documents=False), raw_dir, tmp_path / "worlds")
 
     with pytest.raises(FileNotFoundError):
-        build_world(WorldConfig(seed=7), tmp_path / "missing", tmp_path / "worlds")
+        build_world(WorldConfig(seed=7, documents=False), tmp_path / "missing", tmp_path / "worlds")
 
     assert (world / "transactions.parquet").exists()
 
@@ -106,7 +107,7 @@ def test_needs_the_pattern_file(tmp_path: Path, raw_dir: Path) -> None:
     (raw_dir / "amlworld" / "HI-Small_Patterns.txt").unlink()
 
     with pytest.raises(FileNotFoundError, match="Patterns"):
-        build_world(WorldConfig(seed=7), raw_dir, tmp_path / "worlds")
+        build_world(WorldConfig(seed=7, documents=False), raw_dir, tmp_path / "worlds")
 
 
 def test_command_builds_a_world(
@@ -114,7 +115,8 @@ def test_command_builds_a_world(
 ) -> None:
     worlds = tmp_path / "worlds"
 
-    main(["build", "--seed", "7", "--raw-dir", str(raw_dir), "--worlds-dir", str(worlds)])
+    arguments = ["build", "--seed", "7", "--no-documents", "--raw-dir", str(raw_dir)]
+    main([*arguments, "--worlds-dir", str(worlds)])
 
     assert (worlds / "seed-7" / "manifest.json").exists()
     assert "transactions 2" in capsys.readouterr().out

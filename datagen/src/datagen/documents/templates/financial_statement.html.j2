@@ -1,0 +1,21 @@
+{% extends "base.html.j2" %}
+{% set logo_initials = company_name[:2] | upper %}
+{% set logo_colour = "#2e7d4f" %}
+{% block title %}Annual financial statement{% endblock %}
+{% block issuer %}{{ company_name }}{% endblock %}
+{% block content %}
+<h1>Profit and loss account, fiscal year {{ fiscal_year }}</h1>
+<p>{{ address.street }}, {{ address.postcode }} {{ address.city }}</p>
+<table>
+  <thead><tr><th>Item</th><th class="amount">{{ currency }}</th></tr></thead>
+  <tbody>
+    <tr><td>Revenue</td><td class="amount">{{ money(revenue) }}</td></tr>
+    <tr><td>Cost of sales</td><td class="amount">{{ money(cost_of_sales) }}</td></tr>
+    <tr><td>Gross profit</td><td class="amount">{{ money(gross_profit) }}</td></tr>
+    <tr><td>Operating expenses</td><td class="amount">{{ money(operating_expenses) }}</td></tr>
+    <tr><td>Operating profit</td><td class="amount">{{ money(operating_profit) }}</td></tr>
+    <tr><td>Tax</td><td class="amount">{{ money(tax) }}</td></tr>
+    <tr><td><strong>Net profit</strong></td><td class="amount"><strong>{{ money(net_profit) }}</strong></td></tr>
+  </tbody>
+</table>
+{% endblock %}

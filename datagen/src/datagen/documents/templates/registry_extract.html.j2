@@ -1,0 +1,30 @@
+{% extends "base.html.j2" %}
+{% set logo_initials = country %}
+{% set logo_colour = "#5d4037" %}
+{% block title %}Company register extract{% endblock %}
+{% block issuer %}Company register ({{ country }}){% endblock %}
+{% block content %}
+<h1>Extract from the company register</h1>
+<dl>
+  <dt>Company</dt><dd>{{ company_name }}</dd>
+  <dt>Registration number</dt><dd>{{ registration_number }}</dd>
+  <dt>Legal form</dt><dd>{{ legal_form }}</dd>
+  <dt>Incorporated on</dt><dd>{{ incorporated_on }}</dd>
+  <dt>Registered address</dt><dd>{{ registered_address }}</dd>
+</dl>
+<h2>Directors</h2>
+<table>
+  <thead><tr><th>Name</th><th>Born</th><th>Appointed</th></tr></thead>
+  <tbody>{% for d in directors %}<tr><td>{{ d.name }}</td><td>{{ d.born }}</td><td>{{ d.appointed }}</td></tr>{% endfor %}</tbody>
+</table>
+<h2>Shareholders</h2>
+<table>
+  <thead><tr><th>Holder</th><th>Type</th><th class="amount">Share %</th></tr></thead>
+  <tbody>{% for s in shareholders %}<tr><td>{{ s.holder }}</td><td>{{ s.type }}</td><td class="amount">{{ s.share_percent }}</td></tr>{% endfor %}</tbody>
+</table>
+<svg width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="stamp" style="margin-top: 16pt">
+  <circle cx="48" cy="48" r="44" fill="none" stroke="#8e1b1b" stroke-width="3"/>
+  <circle cx="48" cy="48" r="34" fill="none" stroke="#8e1b1b" stroke-width="1.5"/>
+  <text x="48" y="52" font-size="10.5" text-anchor="middle" fill="#8e1b1b" font-family="Helvetica">REGISTRY</text>
+</svg>
+{% endblock %}

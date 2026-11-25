@@ -21,7 +21,8 @@ FINGUARD_ENV=dev uv run finguard-outbox-relay     # publishes outbox rows to Kaf
 Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required, plus the ICU library, which PyICU builds against
 for name transliteration. On macOS, run `brew install icu4c pkg-config` and, before the first `uv sync`,
 `export PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig"`. On Debian or Ubuntu, run
-`apt-get install libicu-dev pkg-config`. `finguard-migrate` is the Alembic command line
+`apt-get install libicu-dev pkg-config`. The data generator renders PDFs with WeasyPrint, which needs Pango:
+`brew install pango`, or `apt-get install libpango-1.0-0 libpangoft2-1.0-0`. `finguard-migrate` is the Alembic command line
 configured from FinGuard's settings (`FINGUARD_DATABASE__URL`), so `history`, `downgrade` and `revision
 --autogenerate` work the same way.
 
@@ -143,7 +144,8 @@ Download `HI-Small_Trans.csv`, `HI-Small_Patterns.txt` and `HI-Small_accounts.cs
 [Sanctions and PEP watchlist](#sanctions-and-pep-watchlist)), then:
 
 ```bash
-uv run finguard-datagen build --seed 42    # writes data/worlds/seed-42/
+uv run finguard-datagen build --seed 42                  # writes data/worlds/seed-42/ (~40 s with PDFs)
+uv run finguard-datagen build --seed 42 --no-documents   # ~2 s, everything but the PDFs
 ```
 
 AMLworld bank `12`, National Bank of the East, plays FinGuard's neobank (`--our-bank` picks another). The transaction
@@ -159,6 +161,7 @@ world keeps only the transactions an account at our bank is party to, since thos
 | `persons.parquet` | The people behind sole traders, with Ukrainian names kept in Cyrillic next to their official romanisation |
 | `addresses.parquet`, `customer_addresses.parquet` | Each customer's registered address and, for sole traders, the owner's home |
 | `devices.parquet`, `customer_devices.parquet` | The devices each customer uses to sign in, and when each was first seen |
+| `documents/*.pdf`, `documents.parquet` | Onboarding documents for a sample of customers, watermarked SPECIMEN: bank statement, annual financial statement, utility bill, source-of-funds declaration and, for companies, a register extract |
 | `companies.parquet`, `officers.parquet`, `shareholdings.parquet` | Company customers and the holding companies behind them, with registration numbers, directors and who owns what share |
 | `ground_truth/transaction_labels.parquet` | The AMLworld laundering label per transaction and the attempt it belongs to, if any |
 | `ground_truth/laundering_attempts.parquet` | Each laundering attempt from the pattern file that reaches our bank: typology, size, and how many of its transactions we see |
@@ -167,6 +170,7 @@ world keeps only the transactions an account at our bank is party to, since thos
 | `ground_truth/shared_attribute_labels.parquet` | Why an address or device is used by several customers: a laundering ring, or a virtual office, relatives or a bookkeeper |
 | `ground_truth/company_labels.parquet` | Per company: a plain structure, a shell-like one (offshore holding, nominee director, circular ownership) or an innocent look-alike |
 | `ground_truth/screening_labels.parquet` | Names planted close to real OpenSanctions entries: true matches (same birth date and nationality) and namesakes, with how each name was varied |
+| `ground_truth/document_labels.parquet`, `ground_truth/documents/*.json` | Each document's anomalies, and its full ground truth: every field and table cell as generated, and where each anomaly sits |
 | `manifest.json` | Seed, AMLworld variant, our bank, FX rates, their hash and row counts |
 
 Everything under `ground_truth/` is for evaluation only and never reaches the running system.
@@ -183,6 +187,13 @@ name order swapped, a middle name dropped or a typo. True matches, which take th
 fall mostly on people around laundering-linked customers; namesakes, born years apart, can be anyone. A few companies
 get a namesake of a listed organisation. OpenSanctions publishes daily, so the manifest records the hashes of the
 files a world was built from.
+
+Every laundering-linked customer gets an onboarding document pack, and so do 300 benign customers (`--document-sample`),
+half of them look-alikes. A third of the laundering-linked customers' documents carry an injected anomaly: totals that
+don't add up, a statement row edited in another font, turnover that doesn't match the declared one, a profit and loss
+that doesn't add up, or a utility bill for another address. 5% of the others' documents carry one too. Register
+extracts show the ownership structure, and source-of-funds declarations show the declared volume, whatever their
+labels say.
 
 ### Replaying a world into Kafka
 

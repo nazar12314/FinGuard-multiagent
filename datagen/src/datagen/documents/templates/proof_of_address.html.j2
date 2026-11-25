@@ -1,0 +1,20 @@
+{% extends "base.html.j2" %}
+{% set logo_initials = supplier[:2] | upper %}
+{% set logo_colour = "#d68910" %}
+{% block title %}Electricity bill{% endblock %}
+{% block issuer %}{{ supplier }}{% endblock %}
+{% block content %}
+<h1>Electricity bill</h1>
+<dl>
+  <dt>Customer</dt><dd>{{ customer_name }}</dd>
+  <dt>Supply address</dt><dd>{{ address }}</dd>
+  <dt>Account number</dt><dd>{{ account_number }}</dd>
+  <dt>Bill date</dt><dd>{{ bill_date }}</dd>
+</dl>
+<h2>Consumption</h2>
+<table>
+  <thead><tr><th>Month</th><th class="amount">kWh</th></tr></thead>
+  <tbody>{% for u in usage %}<tr><td>{{ u.month }}</td><td class="amount">{{ u.kwh }}</td></tr>{% endfor %}</tbody>
+</table>
+<h2>Amount due: {{ money(amount_due) }} {{ currency }}</h2>
+{% endblock %}

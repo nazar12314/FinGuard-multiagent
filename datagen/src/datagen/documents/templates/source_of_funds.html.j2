@@ -1,0 +1,21 @@
+{% extends "base.html.j2" %}
+{% set logo_initials = "FG" %}
+{% block title %}Source of funds declaration{% endblock %}
+{% block issuer %}FinGuard Bank: customer onboarding{% endblock %}
+{% block content %}
+<h1>Source of funds declaration</h1>
+<dl>
+  <dt>Customer</dt><dd>{{ customer_name }}</dd>
+  <dt>Source of funds</dt><dd>{{ source_of_funds }}</dd>
+  <dt>Expected monthly volume</dt><dd>{{ money(expected_monthly_volume) }} {{ currency }}</dd>
+  <dt>Purpose of the account</dt><dd>{{ account_purpose }}</dd>
+</dl>
+<p style="margin-top: 18pt">I declare that the information above is true and complete.</p>
+<dl>
+  <dt>Signed by</dt><dd>{{ signed_by }}</dd>
+  <dt>Date</dt><dd>{{ signed_on }}</dd>
+</dl>
+<svg width="170" height="46" viewBox="0 0 170 46" role="img" aria-label="signature">
+  <path d="M4 32 C 20 4, 30 44, 46 22 S 70 8, 84 30 S 112 40, 126 14 S 150 26, 166 18" fill="none" stroke="#1a237e" stroke-width="2"/>
+</svg>
+{% endblock %}

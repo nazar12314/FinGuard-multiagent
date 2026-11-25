@@ -26,6 +26,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     build.add_argument("--variant", default="HI-Small", help="AMLworld variant, e.g. HI-Small")
     build.add_argument("--our-bank", default="12", help="AMLworld bank id that plays FinGuard")
     build.add_argument(
+        "--document-sample",
+        type=int,
+        default=WorldConfig.document_sample,
+        help="benign customers who get documents, besides every laundering-linked one",
+    )
+    build.add_argument(
+        "--no-documents",
+        dest="documents",
+        action="store_false",
+        help="skip rendering PDFs, for a quick build",
+    )
+    build.add_argument(
         "--raw-dir",
         type=Path,
         default=Path("data/raw"),
@@ -66,6 +78,8 @@ def _build(arguments: argparse.Namespace) -> None:
         seed=arguments.seed,
         amlworld_variant=arguments.variant,
         our_bank=canonical_bank_id(arguments.our_bank),
+        document_sample=arguments.document_sample,
+        documents=arguments.documents,
     )
     world = build_world(config, arguments.raw_dir, arguments.worlds_dir)
     counts = json.loads((world / "manifest.json").read_text())["counts"]

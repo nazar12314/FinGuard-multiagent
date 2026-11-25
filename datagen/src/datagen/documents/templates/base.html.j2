@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}{% endblock %}</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  body { font-family: "Helvetica", "Arial", sans-serif; font-size: 9.5pt; color: #1d2733; }
+  header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1.5pt solid #1d2733; padding-bottom: 6pt; margin-bottom: 12pt; }
+  header .issuer { font-size: 14pt; font-weight: bold; }
+  h1 { font-size: 13pt; margin: 0 0 8pt; }
+  h2 { font-size: 10.5pt; margin: 14pt 0 4pt; }
+  table { width: 100%; border-collapse: collapse; margin-top: 4pt; }
+  th, td { border-bottom: 0.5pt solid #b8c2cc; padding: 3pt 4pt; text-align: left; vertical-align: top; }
+  th { background: #eef1f4; font-weight: bold; }
+  td.amount, th.amount { text-align: right; font-variant-numeric: tabular-nums; }
+  dl { display: grid; grid-template-columns: 38% 62%; row-gap: 3pt; margin: 0; }
+  dt { color: #5b6773; }
+  dd { margin: 0; }
+  .edited { font-family: "Courier New", "Courier", monospace; }
+  .specimen { position: fixed; top: 38%; left: 6%; font-size: 92pt; font-weight: bold; color: #c0392b; opacity: 0.13; transform: rotate(-32deg); }
+  footer { position: fixed; bottom: -10mm; left: 0; right: 0; font-size: 7pt; color: #7a8692; text-align: center; }
+</style>
+</head>
+<body>
+<div class="specimen">SPECIMEN</div>
+<header>
+  <div class="issuer">{% block issuer %}{% endblock %}</div>
+  <svg width="54" height="54" viewBox="0 0 54 54" role="img" aria-label="logo">
+    <circle cx="27" cy="27" r="25" fill="{{ logo_colour | default('#1f5f99') }}"/>
+    <text x="27" y="33" font-size="17" text-anchor="middle" fill="#fff" font-family="Helvetica">{{ logo_initials | default('FG') }}</text>
+  </svg>
+</header>
+{% block content %}{% endblock %}
+<footer>Synthetic specimen generated for testing. Not a real document.</footer>
+</body>
+</html>

@@ -19,6 +19,8 @@ from datagen.customers import (
     monthly_volumes,
     read_account_holders,
 )
+from datagen.documents.content import document_specs, sample_customers
+from datagen.documents.render import write_documents
 from datagen.fx import EUR_PER_UNIT
 from datagen.ground_truth import build_ground_truth, patterns_file, read_attempts
 from datagen.near_matches import opensanctions_files, plant_near_matches, read_listed
@@ -29,6 +31,9 @@ class WorldConfig:
     seed: int
     amlworld_variant: str = "HI-Small"
     our_bank: str = "12"
+    # Benign customers who get a document pack, besides every laundering-linked one.
+    document_sample: int = 300
+    documents: bool = True
 
 
 def world_dir(worlds_dir: Path, seed: int) -> Path:
@@ -106,6 +111,22 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
     if staging.exists():
         shutil.rmtree(staging)
     (staging / "ground_truth").mkdir(parents=True)
+    sample = (
+        sample_customers(customers.labels, companies.labels, config.document_sample, config.seed)
+        if config.documents
+        else []
+    )
+    specs = document_specs(files, sample, config.seed)
+    files["documents.parquet"] = write_documents(
+        specs, staging / "documents", staging / "ground_truth" / "documents"
+    )
+    files["ground_truth/document_labels.parquet"] = pl.DataFrame(
+        {
+            "document_id": [spec.document_id for spec in specs],
+            "anomalies": [[a["type"] for a in spec.anomalies] for spec in specs],
+        },
+        schema={"document_id": pl.String, "anomalies": pl.List(pl.String)},
+    ).sort("document_id")
     for name, frame in files.items():
         frame.write_parquet(staging / name)
     manifest = world_manifest(config, files, opensanctions_files(opensanctions).values())
@@ -183,6 +204,7 @@ def world_manifest(
             "laundering_linked_customers": int(
                 customer_labels.get_column("laundering_linked").sum()
             ),
+            "documents": files["documents.parquet"].height,
         },
     }
 
