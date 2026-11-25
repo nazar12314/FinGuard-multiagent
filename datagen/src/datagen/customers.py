@@ -203,7 +203,7 @@ def generate_customers(
     seed: int,
 ) -> Customers:
     rng = random.Random(f"{seed}:customers")
-    fakers = _fakers(seed)
+    fakers = locale_fakers(seed, "customers")
     laundering = set(
         holders.join(account_labels, on="account_id")
         .filter(pl.col("laundering_transaction_count") > 0)
@@ -224,16 +224,18 @@ def generate_customers(
         if rng.random() < (
             INCONSISTENT_WHEN_LAUNDERING if laundering_linked else HARD_NEGATIVE_WHEN_BENIGN
         ):
-            anomalies = _weighted(rng, ANOMALY_MIXES)
+            anomalies = weighted_choice(rng, ANOMALY_MIXES)
             profile = "inconsistent" if laundering_linked else "hard_negative"
 
-        country = _weighted(rng, [(country, country.weight) for country in COUNTRIES])
+        country = weighted_choice(rng, [(country, country.weight) for country in COUNTRIES])
         sole_trader = customer["customer_type"] == "sole_trader"
         industry = rng.choice(
             [i for i in INDUSTRIES if (i.sole_traders if sole_trader else i.companies)]
         )
+        form = None
         if sole_trader:
-            person = _person(rng, fakers, customer["entity_id"], country, activity_starts)
+            person_id = f"per-{customer['entity_id']}"
+            person = generate_person(rng, fakers, person_id, country, activity_starts)
             person_rows.append({**person, "customer_id": customer["customer_id"]})
             name = f"{person['full_name_latin']} {industry.trade_name}"
         else:
@@ -256,6 +258,7 @@ def generate_customers(
                 "name": name,
                 "country": country.code,
                 "industry": industry.name,
+                "legal_form": form,
                 "onboarded_at": onboarded_at,
             }
         )
@@ -300,6 +303,7 @@ CUSTOMER_SCHEMA = pl.Schema(
         "name": pl.String,
         "country": pl.String,
         "industry": pl.String,
+        "legal_form": pl.String,
         "onboarded_at": pl.Date,
     }
 )
@@ -334,28 +338,30 @@ CUSTOMER_LABEL_SCHEMA = pl.Schema(
 )
 
 
-def _fakers(seed: int) -> dict[str, Faker]:
+def locale_fakers(seed: int, stream: str) -> dict[str, Faker]:
+    """A seeded Faker per locale; each generator step uses its own stream, so adding one step
+    doesn't change what the others generate."""
     locales = {country.locale for country in COUNTRIES} | {
         locale for _, locale, _ in FOREIGN_NATIONALITIES
     }
     fakers = {}
-    for number, locale in enumerate(sorted(locales)):
+    for locale in sorted(locales):
         faker = Faker(locale)
-        faker.seed_instance(seed * 100 + number)
+        faker.seed_instance(f"{seed}:{stream}:{locale}")
         fakers[locale] = faker
     return fakers
 
 
-def _person(
+def generate_person(
     rng: random.Random,
     fakers: dict[str, Faker],
-    entity_id: str,
+    person_id: str,
     residence: Country,
     activity_starts: date,
 ) -> dict[str, object]:
     nationality, locale = residence.code, residence.locale
     if rng.random() < FOREIGN_NATIONAL_SHARE:
-        nationality, locale = _weighted(
+        nationality, locale = weighted_choice(
             rng, [((code, loc), weight) for code, loc, weight in FOREIGN_NATIONALITIES]
         )
     faker = fakers[locale]
@@ -363,7 +369,7 @@ def _person(
     full_name = f"{first_name} {faker.last_name()}"
     age_days = rng.randint(21 * 365, 70 * 365)
     return {
-        "person_id": f"per-{entity_id}",
+        "person_id": person_id,
         "full_name": full_name,
         "full_name_latin": romanize_ukrainian(full_name) if locale == "uk_UA" else full_name,
         "birth_date": activity_starts - timedelta(days=age_days),
@@ -410,6 +416,6 @@ def risk_rating(
     return "low" if score <= 1 else "medium" if score == 2 else "high"
 
 
-def _weighted[T](rng: random.Random, choices: Sequence[tuple[T, float]]) -> T:
+def weighted_choice[T](rng: random.Random, choices: Sequence[tuple[T, float]]) -> T:
     [choice] = rng.choices([value for value, _ in choices], [weight for _, weight in choices])
     return choice

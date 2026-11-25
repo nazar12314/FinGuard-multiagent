@@ -34,6 +34,9 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "customer_addresses",
         "devices",
         "customer_devices",
+        "companies",
+        "officers",
+        "shareholdings",
     ]:
         assert (world / f"{name}.parquet").exists()
     for name in [
@@ -42,6 +45,7 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "account_labels",
         "customer_labels",
         "shared_attribute_labels",
+        "company_labels",
     ]:
         assert (world / "ground_truth" / f"{name}.parquet").exists()
     accounts = pl.read_parquet(world / "accounts.parquet")
