@@ -13,6 +13,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from finguard.core.logging import configure_logging
 from finguard.core.settings import Settings
+from finguard.core.telemetry import WithoutClientDetails
 
 
 @pytest.fixture
@@ -32,7 +33,7 @@ def span_exporter() -> InMemorySpanExporter:
     # OpenTelemetry allows one global tracer provider per process, so it is set once.
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    provider.add_span_processor(WithoutClientDetails(SimpleSpanProcessor(exporter)))
     trace.set_tracer_provider(provider)
     return exporter
 

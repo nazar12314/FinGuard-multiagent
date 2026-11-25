@@ -246,3 +246,32 @@ def test_each_request_is_traced_and_its_log_line_names_the_trace(
     completed = [line for line in log_lines() if line["event"] == "http.request.completed"]
     ok_line = next(line for line in completed if line["path"] == "/ok")
     assert ok_line["trace_id"] == format(server.context.trace_id, "032x")
+
+
+def test_request_spans_leave_out_the_query_string_and_the_caller(
+    spans: InMemorySpanExporter,
+) -> None:
+    with TestClient(build_app(Settings(env="test"))) as client:
+        client.get("/limit", params={"size": "7", "iban": "DE89370400440532013000"})
+
+    [server] = spans.get_finished_spans()
+    attributes = dict(server.attributes or {})
+    assert "DE89" not in str(attributes)
+    assert attributes["http.url"] == "http://testserver/limit"
+    assert attributes["http.target"] == "/limit"
+    assert not attributes.keys() & {"net.peer.ip", "net.peer.port", "client.address"}
+
+
+def test_only_the_docs_paths_themselves_go_untraced(spans: InMemorySpanExporter) -> None:
+    app = build_app(Settings(env="test"))
+
+    @app.get("/cases/docs")
+    async def case_docs() -> list[str]:
+        return []
+
+    with TestClient(app) as client:
+        client.get("/docs")
+        client.get("/openapi.json")
+        client.get("/cases/docs")
+
+    assert [span.name for span in spans.get_finished_spans()] == ["GET /cases/docs"]
