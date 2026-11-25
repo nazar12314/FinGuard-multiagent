@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     def docs_enabled(self) -> bool:
         return self.env != "prod"
 
+    @property
+    def dev_endpoints_enabled(self) -> bool:
+        return self.env != "prod"
+
 
 @lru_cache
 def get_settings() -> Settings:

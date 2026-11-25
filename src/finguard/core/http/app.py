@@ -5,6 +5,7 @@ from importlib.metadata import version
 from fastapi import FastAPI
 
 from finguard.core.container import Container, build_api_container
+from finguard.core.http import diagnostics
 from finguard.core.http.errors import install_exception_handlers
 from finguard.core.http.middleware import RequestContextMiddleware
 from finguard.core.logging import LogEvent, get_logger
@@ -37,5 +38,7 @@ def create_app(
         openapi_url="/openapi.json" if settings.docs_enabled else None,
     )
     app.add_middleware(RequestContextMiddleware)
+    if settings.dev_endpoints_enabled:
+        app.include_router(diagnostics.router)
     install_exception_handlers(app)
     return app

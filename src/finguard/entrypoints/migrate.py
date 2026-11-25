@@ -2,11 +2,11 @@ from collections.abc import Sequence
 
 from alembic.config import CommandLine, Config
 
+# Import every module that defines tables, so autogenerate and `alembic check` see them all.
+from finguard.core import diagnostics as _diagnostics_tables  # noqa: F401
 from finguard.core.logging import configure_logging
 from finguard.core.settings import load_settings_or_exit
 from finguard.infrastructure.db.metadata import metadata
-
-# Import every module that defines tables, so autogenerate and `alembic check` see them all.
 from finguard.infrastructure.outbox import tables as _outbox_tables  # noqa: F401
 
 MIGRATIONS = "finguard.infrastructure.db:migrations"
