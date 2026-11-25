@@ -181,11 +181,22 @@ services:
     depends_on:
       langfuse-web:
         condition: service_healthy
+      tempo:
+        condition: service_started
     ports:
       - 127.0.0.1:4317:4317
       - 127.0.0.1:4318:4318
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+
+  tempo:
+    image: grafana/tempo:3.1.1
+    profiles: [observability]
+    # The image has no shell or HTTP client, so readiness (GET :3200/ready) can't be checked here.
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
 
   prometheus:
     image: prom/prometheus:v3.16.0
@@ -284,5 +295,6 @@ volumes:
   neo4j-data:
   prometheus-data:
   grafana-data:
+  tempo-data:
   clickhouse-data:
   clickhouse-logs:
