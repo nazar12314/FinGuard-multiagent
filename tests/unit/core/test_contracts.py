@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -9,11 +10,14 @@ from pydantic import BaseModel, ConfigDict
 from finguard.core.contracts import (
     CONTRACTS,
     read,
+    removed_without_retiring,
     render,
     stale,
     write,
 )
 from finguard.core.diagnostics import PING_REQUESTED, PING_REQUESTED_CONTRACT, PingRequest
+from finguard.core.settings import get_settings
+from finguard.entrypoints import contracts as contracts_command
 from finguard.entrypoints.contracts import main
 from finguard.platform.contracts import MessageContract, message_schema
 from finguard.platform.envelope import Envelope
@@ -169,3 +173,83 @@ def test_the_check_command_fails_until_the_files_are_generated(
 
     main(["--directory", str(tmp_path), "generate"])
     main(["--directory", str(tmp_path), "check"])
+
+
+def test_a_contract_removed_since_the_base_must_be_declared_retired(tmp_path: Path) -> None:
+    write(tmp_path, [NOTE_CONTRACT, PING_REQUESTED_CONTRACT])
+
+    assert removed_without_retiring(tmp_path, [PING_REQUESTED_CONTRACT], frozenset()) == [
+        "cases.note.added.v2"
+    ]
+    assert (
+        removed_without_retiring(
+            tmp_path, [PING_REQUESTED_CONTRACT], frozenset({"cases.note.added.v2"})
+        )
+        == []
+    )
+
+
+@pytest.fixture
+def fresh_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[pytest.MonkeyPatch]:
+    """Settings read from the environment this test sets, not cached from an earlier one."""
+    monkeypatch.setenv("FINGUARD_ENV", "test")
+    get_settings.cache_clear()
+    yield monkeypatch
+    get_settings.cache_clear()
+
+
+class FakeRegistry:
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+    def is_compatible(self, subject: str, schema: str) -> bool | None:
+        return "BREAKING" not in schema
+
+
+def test_check_compatibility_fails_on_a_removed_or_breaking_contract(
+    tmp_path: Path, fresh_settings: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fresh_settings.setattr(contracts_command, "SchemaRegistry", FakeRegistry)
+    base, branch = tmp_path / "base", tmp_path / "branch"
+    base.mkdir()
+    branch.mkdir()
+    write(base, [NOTE_CONTRACT, PING_REQUESTED_CONTRACT])
+    write(branch, [PING_REQUESTED_CONTRACT])
+
+    with pytest.raises(SystemExit) as removed:
+        main(["--directory", str(branch), "check-compatibility", "--base", str(base)])
+    assert removed.value.code == 1
+    assert "REMOVED: cases.note.added.v2" in capsys.readouterr().out
+
+    (branch / "diagnostics.ping.requested.v1.json").write_text('{"title": "BREAKING"}')
+    with pytest.raises(SystemExit) as breaking:
+        main(["--directory", str(branch), "check-compatibility"])
+    assert breaking.value.code == 1
+    assert "INCOMPATIBLE: diagnostics.ping.requested.v1" in capsys.readouterr().out
+
+
+def test_an_unreachable_registry_is_reported_without_a_traceback(
+    tmp_path: Path, fresh_settings: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Nothing listens on port 1, so connecting fails at once.
+    fresh_settings.setenv("FINGUARD_SCHEMA_REGISTRY__URL", "http://127.0.0.1:1/apis/ccompat/v7")
+    write(tmp_path, [PING_REQUESTED_CONTRACT])
+
+    with pytest.raises(SystemExit) as failure:
+        main(["--directory", str(tmp_path), "register"])
+
+    assert failure.value.code == 2
+    error = capsys.readouterr().err
+    assert error.startswith("error: PUT /config/diagnostics.ping.requested.v1:")
+    assert "http://127.0.0.1:1/apis/ccompat/v7 is unreachable" in error
+
+
+def test_a_missing_contracts_directory_is_an_error_not_created(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as failure:
+        main(["--directory", str(tmp_path / "contracts"), "generate"])
+
+    assert failure.value.code == 2
+    assert not (tmp_path / "contracts").exists()
+    assert "not a directory" in capsys.readouterr().err

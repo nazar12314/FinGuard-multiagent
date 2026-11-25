@@ -8,6 +8,10 @@ from finguard.platform.contracts import MessageContract, message_schema
 # Every message FinGuard publishes. A module adds its contracts here when it starts producing.
 CONTRACTS: tuple[MessageContract, ...] = (PING_REQUESTED_CONTRACT,)
 
+# Subjects (`<type>.v<version>`) no longer produced. Removing a contract must be declared
+# here: consumers can still meet its messages in topics and retry tiers until they expire.
+RETIRED: frozenset[str] = frozenset()
+
 
 def render(contracts: Iterable[MessageContract]) -> dict[str, str]:
     """The contract files by name, in a stable layout so regenerating changes nothing."""
@@ -21,7 +25,6 @@ def render(contracts: Iterable[MessageContract]) -> dict[str, str]:
 def write(directory: Path, contracts: Iterable[MessageContract]) -> list[str]:
     """Bring the schema files in `directory` in line with `contracts`. Return what changed."""
     expected = render(contracts)
-    directory.mkdir(parents=True, exist_ok=True)
     changed = []
     for name in sorted(_schema_files(directory) - expected.keys()):
         (directory / name).unlink()
@@ -44,6 +47,13 @@ def stale(directory: Path, contracts: Iterable[MessageContract]) -> list[str]:
         if name not in present or (directory / name).read_text() != text
     ]
     return sorted(outdated + list(present - expected.keys()))
+
+
+def removed_without_retiring(
+    base: Path, contracts: Iterable[MessageContract], retired: frozenset[str]
+) -> list[str]:
+    """Subjects that `base` has a file for, but which are neither contracts nor retired."""
+    return sorted(read(base).keys() - {contract.subject for contract in contracts} - retired)
 
 
 def read(directory: Path) -> dict[str, str]:
