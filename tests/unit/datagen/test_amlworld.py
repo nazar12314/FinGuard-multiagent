@@ -26,9 +26,9 @@ def test_keeps_only_transactions_our_bank_is_party_to(tmp_path: Path) -> None:
     transactions = load_bank_slice(csv, OUR_BANK).transactions
 
     assert transactions.select("from_account_id", "to_account_id").rows() == [
-        ("012:C1", "002:B1"),
-        ("001:A1", "012:C2"),
-        ("012:C1", "012:C2"),
+        ("12:C1", "2:B1"),
+        ("1:A1", "12:C2"),
+        ("12:C1", "12:C2"),
     ]
 
 
@@ -49,19 +49,30 @@ def test_an_account_is_identified_by_bank_and_number(tmp_path: Path) -> None:
     accounts = load_bank_slice(csv, OUR_BANK).accounts
 
     assert accounts.rows() == [
-        ("002:SAME", "002", "SAME", False),
-        ("012:SAME", "012", "SAME", True),
+        ("12:SAME", "12", "SAME", True),
+        ("2:SAME", "2", "SAME", False),
     ]
 
 
-def test_bank_ids_keep_their_leading_zeros(tmp_path: Path) -> None:
+def test_zero_padded_spellings_of_a_bank_id_are_one_bank(tmp_path: Path) -> None:
     csv = write_transactions_csv(
-        tmp_path, [csv_row(OUR_BANK, "C1", "002", "B1"), csv_row("0012", "D1", "002", "B1")]
+        tmp_path, [csv_row("012", "C1", "002", "B1"), csv_row("0012", "D1", "0002", "B2")]
     )
 
-    accounts = load_bank_slice(csv, OUR_BANK).accounts
+    accounts = load_bank_slice(csv, "12").accounts
 
-    assert "0012:D1" not in accounts.get_column("account_id").to_list()
+    assert accounts.filter("held_at_our_bank").get_column("account_id").to_list() == [
+        "12:C1",
+        "12:D1",
+    ]
+    assert set(accounts.get_column("bank_id")) == {"12", "2"}
+
+
+def test_rejects_a_bank_id_that_isnt_a_number(tmp_path: Path) -> None:
+    csv = write_transactions_csv(tmp_path, [csv_row(OUR_BANK, "C1", "002", "B1")])
+
+    with pytest.raises(AmlworldFormatError, match="bank ids are numbers"):
+        load_bank_slice(csv, "twelve")
 
 
 @pytest.mark.parametrize(
@@ -157,7 +168,7 @@ def test_rejects_a_file_with_another_header(tmp_path: Path) -> None:
 def test_rejects_a_bank_without_transactions(tmp_path: Path) -> None:
     csv = write_transactions_csv(tmp_path, [csv_row("001", "A1", "002", "B1")])
 
-    with pytest.raises(AmlworldFormatError, match="bank 012 has no transactions"):
+    with pytest.raises(AmlworldFormatError, match="bank 12 has no transactions"):
         load_bank_slice(csv, OUR_BANK)
 
 

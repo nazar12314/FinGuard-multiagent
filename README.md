@@ -141,8 +141,9 @@ Download `HI-Small_Trans.csv` and `HI-Small_Patterns.txt` from Kaggle into `data
 uv run finguard-datagen build --seed 42    # writes data/worlds/seed-42/
 ```
 
-AMLworld bank `012` plays FinGuard's neobank (`--our-bank` picks another). The world keeps only the transactions an
-account at that bank is party to, since those are all the neobank would see:
+AMLworld bank `12`, National Bank of the East, plays FinGuard's neobank (`--our-bank` picks another). The transaction
+CSV pads bank ids with varying zeros (`012` and `0012` are both bank 12), so ids are stored without the padding. The
+world keeps only the transactions an account at our bank is party to, since those are all the neobank would see:
 
 | File | Contents |
 | --- | --- |

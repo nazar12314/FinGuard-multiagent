@@ -14,7 +14,7 @@ from datagen.ground_truth import GroundTruth, build_ground_truth, patterns_file,
 class WorldConfig:
     seed: int
     amlworld_variant: str = "HI-Small"
-    our_bank: str = "012"
+    our_bank: str = "12"
 
 
 def world_dir(worlds_dir: Path, seed: int) -> Path:
