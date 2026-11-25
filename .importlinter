@@ -1,5 +1,7 @@
 [importlinter]
-root_package = finguard
+root_packages =
+    finguard
+    datagen
 
 [importlinter:contract:top-level-layers]
 name = Top-level layers point inward
@@ -51,3 +53,11 @@ source_modules =
     finguard.modules.*.service
 forbidden_modules =
     finguard.infrastructure
+
+[importlinter:contract:runtime-free-of-datagen]
+name = The runtime never depends on the data generator
+type = forbidden
+source_modules =
+    finguard
+forbidden_modules =
+    datagen

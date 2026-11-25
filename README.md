@@ -131,6 +131,31 @@ FINGUARD_ENV=dev uv run finguard-contracts register
 FINGUARD_ENV=dev uv run finguard-contracts check-compatibility
 ```
 
+## Building a world
+
+The generator in `datagen/` (its own workspace package, installed by `uv sync`) builds a seeded, deterministic world
+from the [IBM AMLworld dataset](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml).
+Download `HI-Small_Trans.csv` and `HI-Small_Patterns.txt` from Kaggle into `data/raw/amlworld/`, then:
+
+```bash
+uv run finguard-datagen build --seed 42    # writes data/worlds/seed-42/
+```
+
+AMLworld bank `12`, National Bank of the East, plays FinGuard's neobank (`--our-bank` picks another). The transaction
+CSV pads bank ids with varying zeros (`012` and `0012` are both bank 12), so ids are stored without the padding. The
+world keeps only the transactions an account at our bank is party to, since those are all the neobank would see:
+
+| File | Contents |
+| --- | --- |
+| `transactions.parquet` | One row per transaction, in time order: original amounts and currencies plus EUR amounts from a fixed FX table |
+| `accounts.parquet` | Every account in those transactions, identified as `<bank>:<account>`, flagged when it's held at our bank |
+| `ground_truth/transaction_labels.parquet` | The AMLworld laundering label per transaction and the attempt it belongs to, if any |
+| `ground_truth/laundering_attempts.parquet` | Each laundering attempt from the pattern file that reaches our bank: typology, size, and how many of its transactions we see |
+| `ground_truth/account_labels.parquet` | Per account: how many laundering transactions it's party to, and in which attempts |
+| `manifest.json` | Seed, AMLworld variant, our bank, FX rates, their hash and row counts |
+
+Everything under `ground_truth/` is for evaluation only and never reaches the running system.
+
 ## Health, readiness and metrics
 
 Every process serves three endpoints for Kubernetes probes and Prometheus. The API serves them on its own port; the
@@ -165,7 +190,7 @@ in flight, for up to `FINGUARD_API__GRACEFUL_SHUTDOWN_TIMEOUT_S`.
 | `src/finguard/` | The application package: entrypoints, core, infrastructure, platform and the bounded-context modules |
 | `contracts/` | JSON Schemas for Kafka messages |
 | `agents/` | Versioned prompts, agent configs and knowledge notes |
-| `datagen/` | Synthetic data generator |
+| `datagen/` | Synthetic data generator (`finguard-datagen`), a separate workspace package |
 | `evals/` | Evaluation harness, datasets and reports |
 | `ui/` | Streamlit review console |
 | `deploy/` | docker-compose, images, Helm, kind and Terraform |
