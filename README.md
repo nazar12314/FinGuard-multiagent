@@ -51,6 +51,63 @@ keep running.
 The collector sends traces to Langfuse and serves metrics for Prometheus to scrape. Ollama runs on the host, not in
 Compose. All ports are bound to `127.0.0.1`, and the credentials are for this local stack only.
 
+## Watching a message flow
+
+Outside prod, the API has a diagnostic ping that travels the whole messaging path: the API writes it to the outbox,
+the relay publishes it to Kafka, and a consumer handles it, retrying or dead-lettering it when asked to fail.
+
+Prepare the stack once:
+
+```bash
+docker compose -f deploy/compose/compose.yaml up -d --wait
+export FINGUARD_ENV=dev FINGUARD_LOG_FORMAT=console
+uv run finguard-migrate upgrade head
+uv run finguard-topics
+```
+
+Then start each process in its own terminal, with the same two variables exported. Shorter retry delays than the
+default 30 s and 300 s make the retries quicker to watch:
+
+```bash
+uv run finguard-api
+uv run finguard-outbox-relay
+FINGUARD_KAFKA__RETRY_DELAYS_S='[5, 10]' uv run finguard-ping-consumer
+```
+
+Send pings and follow them. The routes need a caller, which the dev auth stub takes from the `X-Dev-User-Id` header
+(any UUID):
+
+```bash
+CALLER='X-Dev-User-Id: 0196d5a0-0000-7000-8000-000000000001'
+curl -s -X POST localhost:8000/api/v1/dev/pings -H "$CALLER" -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST localhost:8000/api/v1/dev/pings -H "$CALLER" -H 'Content-Type: application/json' \
+  -d '{"fail": "transient", "times": 4}'
+curl -s -X POST localhost:8000/api/v1/dev/pings -H "$CALLER" -H 'Content-Type: application/json' \
+  -d '{"fail": "permanent"}'
+curl -s -H "$CALLER" localhost:8000/api/v1/dev/pings/<ping_id>
+```
+
+The status reports what has been recorded, together with every attempt so far:
+
+| Status | Meaning |
+| --- | --- |
+| `queued` | In the outbox; the relay hasn't published it yet |
+| `published` | In Kafka, not handled yet |
+| `failing` | At least one attempt failed, and it hasn't been handled yet |
+| `handled` | The consumer handled it and recorded it in the inbox |
+| `dead_lettered` | It failed permanently, so the consumer sent it to `diagnostics.pings.dlq` |
+| `parked` | Kafka refused it for good, so the relay set it aside |
+
+A ping with `"times": 4` fails three times in place, waits 5 s on `diagnostics.pings.retry.1`, fails once more there
+and then succeeds. Which retry topic a failing ping waits on, and whether it ran out of retries, is in the consumer's
+log (`consumer.handler_failed`, `consumer.retry_scheduled`, `consumer.dead_lettered`) and on the topics themselves.
+To read the dead-letter topic with its error headers:
+
+```bash
+docker exec finguard-kafka-1 /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:19092 \
+  --topic diagnostics.pings.dlq --from-beginning --timeout-ms 5000 --formatter-property print.headers=true
+```
+
 ## Repository layout
 
 | Path | Contents |

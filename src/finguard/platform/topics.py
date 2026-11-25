@@ -16,6 +16,8 @@ CASES_EVENTS = Topic("cases.events")
 AGENT_RESULTS = Topic("agent.results")
 DOCUMENTS_UPLOADED = Topic("documents.uploaded")
 DOCUMENTS_PARSED = Topic("documents.parsed")
+# Dev-only pings that exercise the outbox, relay and consumer runtime end to end.
+DIAGNOSTICS_PINGS = Topic("diagnostics.pings", partitions=1)
 
 # Every topic FinGuard publishes to. The per-agent task topics join once the agent types exist.
 TOPICS = (
@@ -26,5 +28,6 @@ TOPICS = (
     AGENT_RESULTS,
     DOCUMENTS_UPLOADED,
     DOCUMENTS_PARSED,
+    DIAGNOSTICS_PINGS,
 )
 TOPIC_NAMES = frozenset(topic.name for topic in TOPICS)

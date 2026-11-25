@@ -136,6 +136,14 @@ def test_routes_receive_the_authenticated_principal(client: TestClient) -> None:
     assert response.json() == {"user_id": USER_ID, "roles": ["admin"]}
 
 
+@pytest.mark.parametrize(("env", "status"), [("dev", 401), ("prod", 404)])
+def test_dev_endpoints_are_left_out_in_prod(env: Environment, status: int) -> None:
+    # model_construct skips validation: prod has no real authenticator yet.
+    with TestClient(create_app(Settings.model_construct(env=env))) as client:
+        # Without credentials the route answers 401 where it exists and 404 where it doesn't.
+        assert client.post("/api/v1/dev/pings", json={}).status_code == status
+
+
 @pytest.mark.parametrize(("env", "docs_status"), [("dev", 200), ("prod", 404)])
 def test_openapi_docs_are_hidden_in_prod(env: Environment, docs_status: int) -> None:
     # model_construct skips validation: prod has no real authenticator yet.

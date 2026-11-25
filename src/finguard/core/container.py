@@ -8,14 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finguard.core.auth import Authenticator, DevHeaderAuthenticator
 from finguard.core.settings import AuthSettings, Settings
-from finguard.infrastructure.db.engine import create_database_engine, create_session_factory
+from finguard.infrastructure.db.engine import (
+    create_database_engine,
+    create_session_factory,
+)
 from finguard.infrastructure.kafka.consumer import (
     KafkaMessageConsumer,
     MessageHandler,
     RetryPolicy,
     create_kafka_consumer,
 )
-from finguard.infrastructure.kafka.publisher import KafkaPublisher, create_kafka_producer
+from finguard.infrastructure.kafka.publisher import (
+    KafkaPublisher,
+    create_kafka_producer,
+)
 from finguard.infrastructure.kafka.topics import subscribed_topics
 from finguard.infrastructure.outbox.relay import OutboxRelay
 from finguard.platform.topics import Topic
@@ -28,25 +34,32 @@ _CONSUMER_PRODUCER_STOP_TIMEOUT_S = 10.0
 class Container:
     settings: Settings
     authenticator: Authenticator
+    session_factory: async_sessionmaker[AsyncSession]
 
 
 def build_authenticator(settings: AuthSettings) -> Authenticator:
-    # Exhaustive over the Literal: mypy reports a missing return once a new mode is added.
     match settings.mode:
         case "dev_header":
             return DevHeaderAuthenticator()
 
 
 async def build_api_container(settings: Settings, resources: AsyncExitStack) -> Container:
-    """Wire the API process. Every client opened here is registered on `resources`,
-    which the caller owns, so it is closed even if a later step fails."""
-    return Container(settings=settings, authenticator=build_authenticator(settings.auth))
+    """
+    Wire the API process. Every client opened here is registered on `resources`,
+    which the caller owns, so it is closed even if a later step fails.
+    """
+    return Container(
+        settings=settings,
+        authenticator=build_authenticator(settings.auth),
+        session_factory=open_session_factory(settings, resources),
+    )
 
 
 async def build_outbox_relay(settings: Settings, resources: AsyncExitStack) -> OutboxRelay:
     relay_settings = settings.outbox_relay
+
     return OutboxRelay(
-        _open_database(settings, resources),
+        open_session_factory(settings, resources),
         KafkaPublisher(
             await _start_producer(settings, resources, relay_settings.publish_timeout_s)
         ),
@@ -63,14 +76,16 @@ async def build_message_consumer(
     topics: Sequence[Topic],
     handlers: Mapping[str, MessageHandler],
 ) -> KafkaMessageConsumer:
-    """Wire a consumer group named `name` for `topics`, including their retry topics."""
+    """
+    Wire a consumer group named `name` for `topics`, including their retry topics.
+    """
     policy = RetryPolicy(
         attempts=settings.consumer.attempts,
         attempt_backoff_s=settings.consumer.attempt_backoff_s,
         handler_timeout_s=settings.consumer.handler_timeout_s,
         retry_delays_s=settings.kafka.retry_delays_s,
     )
-    session_factory = _open_database(settings, resources)
+    session_factory = open_session_factory(settings, resources)
     producer = await _start_producer(settings, resources, _CONSUMER_PRODUCER_STOP_TIMEOUT_S)
     consumer = create_kafka_consumer(
         settings.kafka.bootstrap_servers,
@@ -79,13 +94,15 @@ async def build_message_consumer(
         policy=policy,
     )
     resources.push_async_callback(consumer.stop)
+
     await consumer.start()
+
     return KafkaMessageConsumer(
         consumer, producer, session_factory, handlers, name=name, policy=policy
     )
 
 
-def _open_database(
+def open_session_factory(
     settings: Settings, resources: AsyncExitStack
 ) -> async_sessionmaker[AsyncSession]:
     engine = create_database_engine(
@@ -94,6 +111,7 @@ def _open_database(
         idle_in_transaction_timeout_s=settings.database.idle_in_transaction_timeout_s,
     )
     resources.push_async_callback(engine.dispose)
+
     return create_session_factory(engine)
 
 

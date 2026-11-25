@@ -55,7 +55,9 @@ def empty_database_url(postgres: PostgresContainer) -> str:
 async def session_factory(database_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_database_engine(database_url, pool_size=4, idle_in_transaction_timeout_s=60)
     async with engine.begin() as connection:
-        await connection.execute(text("TRUNCATE platform.outbox, platform.inbox"))
+        await connection.execute(
+            text("TRUNCATE platform.outbox, platform.inbox, diagnostics.ping_attempts")
+        )
     yield create_session_factory(engine)
     await engine.dispose()
 

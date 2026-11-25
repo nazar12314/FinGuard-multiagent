@@ -22,8 +22,6 @@ from finguard.infrastructure.outbox.postgres import PostgresInbox
 from finguard.platform.envelope import Envelope
 from finguard.platform.errors import ApplicationError, DependencyUnavailable
 
-# Runs in the transaction that also marks the message processed, so a handler's writes,
-# including outbox messages, commit or roll back together with that mark.
 MessageHandler = Callable[[Envelope, AsyncSession], Awaitable[None]]
 
 # Headers on retried and dead-lettered copies.
@@ -140,7 +138,8 @@ class KafkaMessageConsumer:
 
     async def run(self, stop: asyncio.Event) -> None:
         """Consume until `stop` is set. Raises if a copy can't be handed on to Kafka;
-        the offset isn't committed then, so the message is redelivered after a restart."""
+        the offset isn't committed then, so the message is redelivered after a restart.
+        """
         self._stop = stop
         while not stop.is_set():
             self._resume_due_partitions()
@@ -291,7 +290,7 @@ class KafkaMessageConsumer:
         await self._producer.send_and_wait(topic, record.value, key=record.key, headers=headers)
         dead_lettered = topic == dead_letter_topic(split_retry_topic(record.topic)[0])
         logger.warning(
-            ConsumerEvent.DEAD_LETTERED if dead_lettered else ConsumerEvent.RETRY_SCHEDULED,
+            (ConsumerEvent.DEAD_LETTERED if dead_lettered else ConsumerEvent.RETRY_SCHEDULED),
             topic=topic,
             origin=origin.decode(),
             error=describe(error),
