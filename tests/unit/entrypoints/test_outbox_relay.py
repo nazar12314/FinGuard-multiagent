@@ -22,6 +22,8 @@ class ScriptedRelay:
         self.publish_calls = 0
         self.prune_retentions: list[timedelta] = []
         self.prune_error: Exception | None = None
+        self.backlog_measurements = 0
+        self.backlog_error: Exception | None = None
 
     async def publish_pending(self) -> int:
         self.publish_calls += 1
@@ -32,6 +34,11 @@ class ScriptedRelay:
         if isinstance(batch, Exception):
             raise batch
         return batch
+
+    async def measure_backlog(self) -> None:
+        self.backlog_measurements += 1
+        if self.backlog_error:
+            raise self.backlog_error
 
     async def prune_published(self, older_than: timedelta) -> int:
         self.prune_retentions.append(older_than)
@@ -146,3 +153,16 @@ async def test_the_loop_returns_once_stopped() -> None:
     await run(relay, stop)
 
     assert relay.publish_calls == 0
+
+
+async def test_the_backlog_is_measured_after_every_publish(log_lines: LogLines) -> None:
+    stop = asyncio.Event()
+    relay = ScriptedRelay([1, 1], stop)
+    relay.backlog_error = ConnectionError("database unavailable")
+
+    await run(relay, stop, poll_interval_s=0.01)
+
+    # A failed measurement is logged and doesn't stop publishing.
+    assert relay.backlog_measurements == 3
+    assert relay.publish_calls == 3
+    assert "outbox.backlog_unmeasured" in events(log_lines)

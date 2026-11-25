@@ -2,17 +2,27 @@ import re
 import time
 
 import structlog
+from prometheus_client import Counter, Histogram
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from finguard.core.http.errors import error_response
 from finguard.core.logging import LogEvent, get_logger
+from finguard.core.ops import OPS_PATHS
 from finguard.platform.ids import new_id
 
 REQUEST_ID_HEADER = "X-Request-ID"
 _VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
 
 logger = get_logger(__name__)
+
+# Labelled by the route template, not the path, so ids in URLs don't create new series.
+HTTP_REQUESTS = Counter(
+    "finguard_http_requests", "HTTP requests handled", ["method", "route", "status"]
+)
+HTTP_REQUEST_DURATION = Histogram(
+    "finguard_http_request_duration_seconds", "Time to handle an HTTP request", ["method", "route"]
+)
 
 
 class RequestContextMiddleware:
@@ -25,7 +35,8 @@ class RequestContextMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        # Probes and scrapes arrive every few seconds; they would drown the request log.
+        if scope["type"] != "http" or scope["path"] in OPS_PATHS:
             await self.app(scope, receive, send)
             return
 
@@ -58,11 +69,15 @@ class RequestContextMiddleware:
             response = error_response(500, "internal_error", "Internal server error", request_id)
             await response(scope, receive, send_with_request_id)
         finally:
+            duration_s = time.perf_counter() - started_at
+            route = getattr(scope.get("route"), "path", "unmatched")
+            HTTP_REQUESTS.labels(scope["method"], route, str(status_code)).inc()
+            HTTP_REQUEST_DURATION.labels(scope["method"], route).observe(duration_s)
             logger.info(
                 LogEvent.HTTP_REQUEST_COMPLETED,
                 method=scope["method"],
                 path=scope["path"],
                 status=status_code,
-                duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                duration_ms=round(duration_s * 1000, 2),
             )
             structlog.contextvars.clear_contextvars()

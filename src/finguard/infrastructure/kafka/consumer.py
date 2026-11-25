@@ -12,6 +12,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.errors import CommitFailedError, IllegalStateError
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
+from prometheus_client import Counter, Gauge, Histogram
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,6 +39,28 @@ ERROR_HEADER = "finguard-error"
 ORIGIN_HEADER = "finguard-origin"
 
 logger = structlog.stdlib.get_logger(__name__)
+
+# outcome: handled, duplicate, ignored (another type or another group's copy), retried or
+# dead_lettered.
+DELIVERIES = Counter(
+    "finguard_consumer_deliveries", "Deliveries by outcome", ["consumer", "topic", "outcome"]
+)
+HANDLER_FAILURES = Counter(
+    "finguard_consumer_handler_failures",
+    "Failed handling attempts",
+    ["consumer", "message_type", "permanent"],
+)
+HANDLING_DURATION = Histogram(
+    "finguard_consumer_handling_seconds",
+    "Time to handle one delivery, in-place retries included",
+    ["consumer", "message_type"],
+)
+LAG = Gauge(
+    "finguard_consumer_lag",
+    "Messages between the consumer's position and the end of the partition",
+    ["consumer", "topic", "partition"],
+)
+_LAG_INTERVAL_S = 5.0
 
 
 class ConsumerEvent(StrEnum):
@@ -130,6 +153,8 @@ class KafkaMessageConsumer:
         self._policy = policy
         self._paused_until: dict[TopicPartition, float] = {}
         self._stop = asyncio.Event()
+        self._lag_partitions: set[TopicPartition] = set()
+        self._lag_measured_at = 0.0
 
     async def run(self, stop: asyncio.Event) -> None:
         """Consume until `stop` is set. Raises if a copy can't be handed on to Kafka;
@@ -138,6 +163,8 @@ class KafkaMessageConsumer:
         self._stop = stop
         while not stop.is_set():
             self._resume_due_partitions()
+            if time.monotonic() - self._lag_measured_at >= _LAG_INTERVAL_S:
+                await self._measure_lag()
             # One record per poll, so max.poll.interval.ms only has to cover handling one
             # message. aiokafka still fetches ahead in the background.
             batches = await self._consumer.getmany(timeout_ms=200, max_records=1)
@@ -154,6 +181,7 @@ class KafkaMessageConsumer:
         if not self._owns(partition):
             return
         if not self._addressed_to_us(record):
+            DELIVERIES.labels(self._name, record.topic, "ignored").inc()
             await self._commit(partition, record)
             return
         due_at = self._due_at(record)
@@ -181,6 +209,21 @@ class KafkaMessageConsumer:
         ):
             await self._process(record)
         await self._commit(partition, record)
+
+    async def _measure_lag(self) -> None:
+        self._lag_measured_at = time.monotonic()
+        assigned = self._consumer.assignment()
+        for partition in self._lag_partitions - assigned:
+            LAG.remove(self._name, partition.topic, str(partition.partition))
+        self._lag_partitions = set(assigned)
+        for partition in assigned:
+            end = self._consumer.highwater(partition)
+            if end is None:
+                continue  # nothing fetched from this partition yet
+            position = await self._consumer.position(partition)
+            LAG.labels(self._name, partition.topic, str(partition.partition)).set(
+                max(end - position, 0)
+            )
 
     def _owns(self, partition: TopicPartition) -> bool:
         return partition in self._consumer.assignment()
@@ -242,9 +285,11 @@ class KafkaMessageConsumer:
 
         handler = self._handlers.get(envelope.type)
         if handler is None:
+            DELIVERIES.labels(self._name, record.topic, "ignored").inc()
             return
 
-        failure = await self._handle(envelope, handler)
+        with HANDLING_DURATION.labels(self._name, envelope.type).time():
+            failure = await self._handle(envelope, handler, record.topic)
         if failure is None:
             return
         if is_permanent(failure) or tier >= len(self._policy.retry_delays_s):
@@ -252,13 +297,16 @@ class KafkaMessageConsumer:
         else:
             await self._hand_on(record, retry_topic(source, tier + 1), failure)
 
-    async def _handle(self, envelope: Envelope, handler: MessageHandler) -> Exception | None:
+    async def _handle(
+        self, envelope: Envelope, handler: MessageHandler, topic: str
+    ) -> Exception | None:
         attempt = 1
         while True:
-            error = await self._attempt(envelope, handler, attempt)
+            error = await self._attempt(envelope, handler, attempt, topic)
             if error is None:
                 return None
             permanent = is_permanent(error)
+            HANDLER_FAILURES.labels(self._name, envelope.type, str(permanent).lower()).inc()
             logger.warning(
                 ConsumerEvent.HANDLER_FAILED,
                 message_id=str(envelope.id),
@@ -278,7 +326,7 @@ class KafkaMessageConsumer:
             attempt += 1
 
     async def _attempt(
-        self, envelope: Envelope, handler: MessageHandler, attempt: int
+        self, envelope: Envelope, handler: MessageHandler, attempt: int, topic: str
     ) -> Exception | None:
         with tracer.start_as_current_span(
             f"handle {envelope.type}",
@@ -294,8 +342,10 @@ class KafkaMessageConsumer:
                     if not await PostgresInbox(session).try_mark_processed(envelope.id, self._name):
                         span.add_event("duplicate_skipped")
                         logger.info(ConsumerEvent.DUPLICATE_SKIPPED, message_id=str(envelope.id))
+                        DELIVERIES.labels(self._name, topic, "duplicate").inc()
                         return None
                     await handler(envelope, session)
+                DELIVERIES.labels(self._name, topic, "handled").inc()
                 return None
             except Exception as error:
                 record_failure(span, error)
@@ -323,6 +373,8 @@ class KafkaMessageConsumer:
         trace.get_current_span().add_event("handed_on", {"messaging.destination.name": topic})
         await self._producer.send_and_wait(topic, record.value, key=record.key, headers=headers)
         dead_lettered = topic == dead_letter_topic(split_retry_topic(record.topic)[0])
+        outcome = "dead_lettered" if dead_lettered else "retried"
+        DELIVERIES.labels(self._name, record.topic, outcome).inc()
         logger.warning(
             (ConsumerEvent.DEAD_LETTERED if dead_lettered else ConsumerEvent.RETRY_SCHEDULED),
             topic=topic,

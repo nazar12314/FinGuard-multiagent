@@ -10,6 +10,7 @@ from finguard.core.http import diagnostics
 from finguard.core.http.errors import install_exception_handlers
 from finguard.core.http.middleware import RequestContextMiddleware
 from finguard.core.logging import LogEvent, get_logger
+from finguard.core.ops import ops_routes
 from finguard.core.settings import Settings
 
 ContainerFactory = Callable[[Settings, AsyncExitStack], Awaitable[Container]]
@@ -39,11 +40,14 @@ def create_app(
         openapi_url="/openapi.json" if settings.docs_enabled else None,
     )
     app.add_middleware(RequestContextMiddleware)
+    app.router.routes.extend(ops_routes(lambda request: request.app.state.container.readiness))
     if settings.dev_endpoints_enabled:
         app.include_router(diagnostics.router)
     install_exception_handlers(app)
     # One server span per request; the per-message receive and send spans are only noise.
     FastAPIInstrumentor.instrument_app(
-        app, excluded_urls="docs,openapi.json", exclude_spans=["receive", "send"]
+        app,
+        excluded_urls="docs,openapi.json,healthz,readyz,metrics",
+        exclude_spans=["receive", "send"],
     )
     return app

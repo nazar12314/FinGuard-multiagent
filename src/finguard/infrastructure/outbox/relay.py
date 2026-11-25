@@ -2,10 +2,12 @@ import asyncio
 import json
 from collections.abc import Mapping
 from datetime import timedelta
+from functools import cache
 from typing import Any, Protocol, cast
 from uuid import UUID
 
 from opentelemetry.trace import SpanKind
+from prometheus_client import Counter, Gauge
 from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -20,6 +22,22 @@ from finguard.infrastructure.tracing import (
 
 # Any fixed bigint works, as long as every relay uses the same one ("outbox" in ASCII).
 RELAY_LOCK_ID = 0x6F7574626F78
+
+PUBLISHED = Counter("finguard_outbox_published", "Messages the relay published", ["topic"])
+PARKED = Counter("finguard_outbox_parked", "Messages Kafka refused for good", ["topic"])
+
+
+@cache
+def _backlog_gauges() -> tuple[Gauge, Gauge]:
+    # Created on first use: every process imports this module, but only the relay measures
+    # the backlog, and unlabelled gauges would otherwise report 0 from all of them.
+    pending = Gauge("finguard_outbox_pending_messages", "Messages waiting in the outbox")
+    # Grows while publishing is stuck, so it's the signal to alert on rather than the count.
+    oldest_age = Gauge(
+        "finguard_outbox_oldest_pending_age_seconds",
+        "Age of the oldest message waiting in the outbox",
+    )
+    return pending, oldest_age
 
 
 class Publisher(Protocol):
@@ -100,6 +118,7 @@ class OutboxRelay:
                             )
                         except MessageRejected as rejection:
                             record_failure(span, rejection)
+                            PARKED.labels(row.destination).inc()
                             parked = MessageParked(row.id, row.destination, str(rejection))
                             await session.execute(
                                 update(outbox)
@@ -110,6 +129,7 @@ class OutboxRelay:
                         except Exception as error:
                             record_failure(span, error)
                             raise
+                    PUBLISHED.labels(row.destination).inc()
                     published.append(row.id)
 
             if published:
@@ -120,6 +140,20 @@ class OutboxRelay:
         if parked:
             raise parked
         return len(published)
+
+    async def measure_backlog(self) -> None:
+        async with self._session_factory() as session:
+            count, oldest_age_s = (
+                await session.execute(
+                    select(
+                        func.count(),
+                        func.extract("epoch", func.now() - func.min(outbox.c.created_at)),
+                    ).where(outbox.c.published_at.is_(None), outbox.c.failed_at.is_(None))
+                )
+            ).one()
+        pending, oldest_age = _backlog_gauges()
+        pending.set(count)
+        oldest_age.set(float(oldest_age_s or 0))
 
     async def prune_published(self, older_than: timedelta) -> int:
         async with self._session_factory.begin() as session:

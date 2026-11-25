@@ -1,5 +1,4 @@
 import asyncio
-import signal
 import time
 from contextlib import AsyncExitStack, suppress
 from datetime import timedelta
@@ -7,15 +6,20 @@ from typing import Protocol
 
 from finguard.core.container import build_outbox_relay
 from finguard.core.logging import LogEvent, configure_logging, get_logger
+from finguard.core.ops import Readiness, start_ops_server, stop_on_signals
 from finguard.core.settings import OutboxRelaySettings, Settings, load_settings_or_exit
 from finguard.core.telemetry import configure_telemetry
 from finguard.infrastructure.outbox.relay import MessageParked
 
 logger = get_logger(__name__)
 
+OPS_PORT = 9101
+
 
 class Relay(Protocol):
     async def publish_pending(self) -> int: ...
+
+    async def measure_backlog(self) -> None: ...
 
     async def prune_published(self, older_than: timedelta) -> int: ...
 
@@ -74,6 +78,10 @@ async def relay_until_stopped(
         consecutive_failures = 0
         if published:
             logger.info(LogEvent.OUTBOX_BATCH_PUBLISHED, count=published)
+        try:
+            await relay.measure_backlog()
+        except Exception:
+            logger.exception(LogEvent.OUTBOX_BACKLOG_UNMEASURED)
         # A full batch means more messages are probably waiting, so go again at once.
         if published < settings.batch_size:
             await _wait(stop, settings.poll_interval_s)
@@ -86,13 +94,13 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
 
 async def run(settings: Settings) -> None:
     stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for stop_signal in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(stop_signal, stop.set)
+    readiness = Readiness()
+    stop_on_signals(stop, readiness)
 
     logger.info(LogEvent.APP_STARTING, env=settings.env, process="outbox-relay")
     async with AsyncExitStack() as resources:
-        relay = await build_outbox_relay(settings, resources)
+        relay = await build_outbox_relay(settings, resources, readiness)
+        await start_ops_server(settings.ops, readiness, resources, default_port=OPS_PORT)
         await relay_until_stopped(relay, settings.outbox_relay, stop)
     logger.info(LogEvent.APP_STOPPED)
 
