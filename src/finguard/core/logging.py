@@ -28,6 +28,7 @@ class LogEvent(StrEnum):
     OUTBOX_RELAY_GAVE_UP = "outbox.relay_gave_up"
     OUTBOX_PRUNED = "outbox.pruned"
     OUTBOX_PRUNE_FAILED = "outbox.prune_failed"
+    OUTBOX_BACKLOG_UNMEASURED = "outbox.backlog_unmeasured"
 
 
 # Matches whole trailing name segments, so access_token is masked but token_count is not.

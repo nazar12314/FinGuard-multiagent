@@ -8,10 +8,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind
+from prometheus_client import REGISTRY
 
 from finguard.core.container import Container, build_api_container
 from finguard.core.http.app import create_app
 from finguard.core.http.dependencies import CurrentPrincipal
+from finguard.core.ops import Readiness
 from finguard.core.settings import Environment, Settings
 from finguard.platform.errors import (
     ApplicationError,
@@ -248,6 +250,39 @@ def test_each_request_is_traced_and_its_log_line_names_the_trace(
     assert ok_line["trace_id"] == format(server.context.trace_id, "032x")
 
 
+def test_the_api_serves_probes_and_metrics_without_logging_them(log_lines: LogLines) -> None:
+    async def database_down() -> None:
+        raise ConnectionRefusedError("connection refused")
+
+    async def factory(settings: Settings, resources: AsyncExitStack) -> Container:
+        container = await build_api_container(settings, resources)
+        readiness = Readiness()
+        readiness.require("database", database_down)
+        return Container(
+            settings=container.settings,
+            authenticator=container.authenticator,
+            session_factory=container.session_factory,
+            readiness=readiness,
+        )
+
+    with TestClient(build_app(Settings(env="test")), raise_server_exceptions=False) as client:
+        client.get("/ok")
+        metrics = client.get("/metrics").text
+    with TestClient(create_app(Settings(env="test"), container_factory=factory)) as client:
+        healthz = client.get("/healthz")
+        readyz = client.get("/readyz")
+
+    assert healthz.status_code == 200
+    assert readyz.status_code == 503
+    assert readyz.json()["checks"] == {"database": "ConnectionRefusedError"}
+    # Requests are counted by route template, and probes never reach the request log.
+    assert 'finguard_http_requests_total{method="GET",route="/ok",status="200"}' in metrics
+    logged_paths = {
+        line.get("path") for line in log_lines() if line["event"] == "http.request.completed"
+    }
+    assert logged_paths == {"/ok"}
+
+
 def test_request_spans_leave_out_the_query_string_and_the_caller(
     spans: InMemorySpanExporter,
 ) -> None:
@@ -275,3 +310,14 @@ def test_only_the_docs_paths_themselves_go_untraced(spans: InMemorySpanExporter)
         client.get("/cases/docs")
 
     assert [span.name for span in spans.get_finished_spans()] == ["GET /cases/docs"]
+
+
+def test_unusual_http_methods_share_one_metric_series(client: TestClient) -> None:
+    client.request("PROPFIND", "/ok")
+    client.request("BREW", "/ok")
+
+    sample = REGISTRY.get_sample_value(
+        "finguard_http_requests_total", {"method": "other", "route": "/ok", "status": "405"}
+    )
+    assert sample is not None
+    assert sample >= 2

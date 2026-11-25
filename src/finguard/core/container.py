@@ -2,13 +2,16 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
+from functools import partial
 
 from aiokafka import AIOKafkaProducer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finguard.core.auth import Authenticator, DevHeaderAuthenticator
+from finguard.core.ops import Heartbeat, Readiness
 from finguard.core.settings import AuthSettings, Settings
 from finguard.infrastructure.db.engine import (
+    check_database,
     create_database_engine,
     create_session_factory,
 )
@@ -20,6 +23,7 @@ from finguard.infrastructure.kafka.consumer import (
 )
 from finguard.infrastructure.kafka.publisher import (
     KafkaPublisher,
+    check_kafka,
     create_kafka_producer,
 )
 from finguard.infrastructure.kafka.topics import subscribed_topics
@@ -35,6 +39,7 @@ class Container:
     settings: Settings
     authenticator: Authenticator
     session_factory: async_sessionmaker[AsyncSession]
+    readiness: Readiness
 
 
 def build_authenticator(settings: AuthSettings) -> Authenticator:
@@ -48,21 +53,29 @@ async def build_api_container(settings: Settings, resources: AsyncExitStack) -> 
     Wire the API process. Every client opened here is registered on `resources`,
     which the caller owns, so it is closed even if a later step fails.
     """
+    session_factory = open_session_factory(settings, resources)
+    readiness = Readiness()
+    readiness.require("database", partial(check_database, session_factory))
     return Container(
         settings=settings,
         authenticator=build_authenticator(settings.auth),
-        session_factory=open_session_factory(settings, resources),
+        session_factory=session_factory,
+        readiness=readiness,
     )
 
 
-async def build_outbox_relay(settings: Settings, resources: AsyncExitStack) -> OutboxRelay:
+async def build_outbox_relay(
+    settings: Settings, resources: AsyncExitStack, readiness: Readiness
+) -> OutboxRelay:
     relay_settings = settings.outbox_relay
+    session_factory = open_session_factory(settings, resources)
+    producer = await _start_producer(settings, resources, relay_settings.publish_timeout_s)
+    readiness.require("database", partial(check_database, session_factory))
+    readiness.require("kafka", partial(check_kafka, producer))
 
     return OutboxRelay(
-        open_session_factory(settings, resources),
-        KafkaPublisher(
-            await _start_producer(settings, resources, relay_settings.publish_timeout_s)
-        ),
+        session_factory,
+        KafkaPublisher(producer),
         batch_size=relay_settings.batch_size,
         publish_timeout_s=relay_settings.publish_timeout_s,
     )
@@ -75,16 +88,13 @@ async def build_message_consumer(
     name: str,
     topics: Sequence[Topic],
     handlers: Mapping[str, MessageHandler],
+    readiness: Readiness,
+    heartbeat: Heartbeat,
 ) -> KafkaMessageConsumer:
     """
     Wire a consumer group named `name` for `topics`, including their retry topics.
     """
-    policy = RetryPolicy(
-        attempts=settings.consumer.attempts,
-        attempt_backoff_s=settings.consumer.attempt_backoff_s,
-        handler_timeout_s=settings.consumer.handler_timeout_s,
-        retry_delays_s=settings.kafka.retry_delays_s,
-    )
+    policy = _retry_policy(settings)
     session_factory = open_session_factory(settings, resources)
     producer = await _start_producer(settings, resources, _CONSUMER_PRODUCER_STOP_TIMEOUT_S)
     consumer = create_kafka_consumer(
@@ -96,9 +106,32 @@ async def build_message_consumer(
     resources.push_async_callback(consumer.stop)
 
     await consumer.start()
+    readiness.require("database", partial(check_database, session_factory))
+    readiness.require("kafka", partial(check_kafka, producer))
 
     return KafkaMessageConsumer(
-        consumer, producer, session_factory, handlers, name=name, policy=policy
+        consumer,
+        producer,
+        session_factory,
+        handlers,
+        name=name,
+        policy=policy,
+        heartbeat=heartbeat.beat,
+    )
+
+
+def consumer_heartbeat(settings: Settings) -> Heartbeat:
+    # One poll may take as long as Kafka tolerates, plus handing a copy on and committing.
+    policy = _retry_policy(settings)
+    return Heartbeat(stale_after_s=policy.max_poll_interval_s + 60)
+
+
+def _retry_policy(settings: Settings) -> RetryPolicy:
+    return RetryPolicy(
+        attempts=settings.consumer.attempts,
+        attempt_backoff_s=settings.consumer.attempt_backoff_s,
+        handler_timeout_s=settings.consumer.handler_timeout_s,
+        retry_delays_s=settings.kafka.retry_delays_s,
     )
 
 

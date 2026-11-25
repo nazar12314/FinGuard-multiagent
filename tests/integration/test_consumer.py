@@ -9,12 +9,15 @@ import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
+from prometheus_client import REGISTRY
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from finguard.core.container import build_message_consumer
+from finguard.core.container import build_message_consumer, consumer_heartbeat
+from finguard.core.ops import Readiness
 from finguard.core.settings import ConsumerSettings, DatabaseSettings, KafkaSettings, Settings
+from finguard.infrastructure.kafka import consumer as consumer_runtime
 from finguard.infrastructure.kafka.consumer import CONSUMER_HEADER, ERROR_HEADER, ORIGIN_HEADER
 from finguard.infrastructure.kafka.publisher import (
     KafkaPublisher,
@@ -113,7 +116,13 @@ async def running(
     stop = asyncio.Event()
     async with AsyncExitStack() as resources:
         consumer = await build_message_consumer(
-            settings, resources, name=name, topics=[source], handlers={HANDLED_TYPE: handler}
+            settings,
+            resources,
+            name=name,
+            topics=[source],
+            handlers={HANDLED_TYPE: handler},
+            readiness=Readiness(),
+            heartbeat=consumer_heartbeat(settings),
         )
         task = asyncio.create_task(consumer.run(stop))
         try:
@@ -547,3 +556,54 @@ async def test_a_retried_message_stays_in_one_trace(
     assert failed.context is not None
     [failure] = [line for line in log_lines() if line["event"] == "consumer.handler_failed"]
     assert failure["span_id"] == format(failed.context.span_id, "016x")
+
+
+def deliveries(group: str, topic: str, outcome: str) -> float:
+    value = REGISTRY.get_sample_value(
+        "finguard_consumer_deliveries_total",
+        {"consumer": group, "topic": topic, "outcome": outcome},
+    )
+    return value or 0
+
+
+async def test_each_delivery_outcome_and_the_lag_are_counted(
+    session_factory: SessionFactory,
+    settings_for: SettingsFor,
+    source: Topic,
+    group: str,
+    producer: AIOKafkaProducer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(consumer_runtime, "_LAG_INTERVAL_S", 0.1)
+    flaky, other, last = new_envelope(), new_envelope("cases.case.closed"), new_envelope()
+    for message in (flaky, flaky, other, last):
+        await send(producer, source.name, message)
+    handler = RecordingHandler(ConnectionError("db down"))
+    retry_tier = retry_topic(source.name, 1)
+
+    def lag() -> float | None:
+        return REGISTRY.get_sample_value(
+            "finguard_consumer_lag", {"consumer": group, "topic": source.name, "partition": "0"}
+        )
+
+    await consume_until(
+        settings_for(),
+        source,
+        handler,
+        lambda: deliveries(group, retry_tier, "duplicate") == 1 and lag() == 0,
+        group,
+    )
+
+    # The first copy of `flaky` fails and moves to the retry topic; the second is handled
+    # straight away, so the retried copy later counts as a duplicate.
+    assert deliveries(group, source.name, "retried") == 1
+    assert deliveries(group, source.name, "handled") == 2
+    assert deliveries(group, source.name, "ignored") == 1
+    assert deliveries(group, retry_tier, "duplicate") == 1
+    assert (
+        REGISTRY.get_sample_value(
+            "finguard_consumer_handler_failures_total",
+            {"consumer": group, "message_type": HANDLED_TYPE, "permanent": "false"},
+        )
+        == 1
+    )

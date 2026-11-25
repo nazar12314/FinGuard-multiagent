@@ -59,3 +59,9 @@ class KafkaPublisher:
             )
         except _REJECTIONS as error:
             raise MessageRejected(f"{type(error).__name__}: {error}") from error
+
+
+async def check_kafka(producer: AIOKafkaProducer) -> None:
+    """Fetch cluster metadata through the producer's connection, which fails while the
+    brokers are unreachable."""
+    await producer.client.fetch_all_metadata()

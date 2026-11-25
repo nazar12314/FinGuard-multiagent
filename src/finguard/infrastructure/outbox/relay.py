@@ -2,10 +2,12 @@ import asyncio
 import json
 from collections.abc import Mapping
 from datetime import timedelta
+from functools import cache
 from typing import Any, Protocol, cast
 from uuid import UUID
 
 from opentelemetry.trace import SpanKind
+from prometheus_client import Counter, Gauge
 from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -20,6 +22,22 @@ from finguard.infrastructure.tracing import (
 
 # Any fixed bigint works, as long as every relay uses the same one ("outbox" in ASCII).
 RELAY_LOCK_ID = 0x6F7574626F78
+
+PUBLISHED = Counter("finguard_outbox_published", "Messages the relay published", ["topic"])
+PARKED = Counter("finguard_outbox_parked", "Messages Kafka refused for good", ["topic"])
+
+
+@cache
+def _backlog_gauges() -> tuple[Gauge, Gauge]:
+    # Created on first use: every process imports this module, but only the relay measures
+    # the backlog, and unlabelled gauges would otherwise report 0 from all of them.
+    pending = Gauge("finguard_outbox_pending_messages", "Messages waiting in the outbox")
+    # Grows while publishing is stuck, so it's the signal to alert on rather than the count.
+    oldest_age = Gauge(
+        "finguard_outbox_oldest_pending_age_seconds",
+        "Age of the oldest message waiting in the outbox",
+    )
+    return pending, oldest_age
 
 
 class Publisher(Protocol):
@@ -78,7 +96,7 @@ class OutboxRelay:
 
             # One message at a time, so a refused message is known exactly and the ones
             # before it count as sent.
-            published: list[UUID] = []
+            published: list[tuple[UUID, str]] = []
             async with asyncio.timeout(self._publish_timeout_s):
                 for row in rows:
                     with tracer.start_as_current_span(
@@ -117,16 +135,36 @@ class OutboxRelay:
                         except (Exception, asyncio.CancelledError) as error:
                             record_failure(span, error)
                             raise
-                    published.append(row.id)
+                    published.append((row.id, row.destination))
 
             if published:
                 await session.execute(
-                    update(outbox).where(outbox.c.id.in_(published)).values(published_at=func.now())
+                    update(outbox)
+                    .where(outbox.c.id.in_([message_id for message_id, _ in published]))
+                    .values(published_at=func.now())
                 )
 
+        # Counted once committed: a failed commit leaves the messages pending, to be sent again.
+        for _, topic in published:
+            PUBLISHED.labels(topic).inc()
         if parked:
+            PARKED.labels(parked.topic).inc()
             raise parked
         return len(published)
+
+    async def measure_backlog(self) -> None:
+        async with self._session_factory() as session:
+            count, oldest_age_s = (
+                await session.execute(
+                    select(
+                        func.count(),
+                        func.extract("epoch", func.now() - func.min(outbox.c.created_at)),
+                    ).where(outbox.c.published_at.is_(None), outbox.c.failed_at.is_(None))
+                )
+            ).one()
+        pending, oldest_age = _backlog_gauges()
+        pending.set(count)
+        oldest_age.set(float(oldest_age_s or 0))
 
     async def prune_published(self, older_than: timedelta) -> int:
         async with self._session_factory.begin() as session:

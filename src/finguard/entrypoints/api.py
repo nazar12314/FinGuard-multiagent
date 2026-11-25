@@ -1,3 +1,6 @@
+import signal
+from types import FrameType
+
 import uvicorn
 
 from finguard.core.http.app import create_app
@@ -6,10 +9,17 @@ from finguard.core.settings import load_settings_or_exit
 from finguard.core.telemetry import configure_telemetry
 
 
+def _exit_on_signal(signal_number: int, frame: FrameType | None) -> None:
+    raise SystemExit(128 + signal_number)
+
+
 def main() -> None:
     settings = load_settings_or_exit()
     configure_logging(settings)
     flush_telemetry = configure_telemetry(settings, process="api")
+    # After a graceful shutdown uvicorn raises the signal again under the handler it found.
+    # The default handler would kill the process before the spans below are flushed.
+    signal.signal(signal.SIGTERM, _exit_on_signal)
     try:
         uvicorn.run(
             create_app(settings),

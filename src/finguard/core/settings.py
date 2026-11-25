@@ -47,6 +47,13 @@ class ConsumerSettings(BaseModel):
     handler_timeout_s: float = Field(default=60.0, gt=0)
 
 
+class OpsSettings(BaseModel):
+    # Where a worker serves /healthz, /readyz and /metrics. Each process has its own default
+    # port, so they can run side by side on one machine; the API serves these on its own port.
+    host: str = "0.0.0.0"
+    port: int | None = Field(default=None, ge=1, le=65535)
+
+
 class TelemetrySettings(BaseModel):
     # Off unless asked for, so a stack without the collector doesn't log export failures.
     enabled: bool = False
@@ -65,6 +72,7 @@ class OutboxRelaySettings(BaseModel):
     max_consecutive_failures: int = Field(default=5, ge=1)
     retention_days: int = Field(default=7, ge=1)
     prune_interval_s: float = Field(default=3600.0, gt=0)
+    backlog_interval_s: float = Field(default=5.0, gt=0)
 
 
 class Settings(BaseSettings):
@@ -87,6 +95,7 @@ class Settings(BaseSettings):
     kafka: KafkaSettings = KafkaSettings()
     consumer: ConsumerSettings = ConsumerSettings()
     telemetry: TelemetrySettings = TelemetrySettings()
+    ops: OpsSettings = OpsSettings()
     outbox_relay: OutboxRelaySettings = OutboxRelaySettings()
 
     @model_validator(mode="after")
