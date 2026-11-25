@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "AccountReference": {
+      "additionalProperties": false,
+      "properties": {
+        "account_number": {
+          "minLength": 1,
+          "title": "Account Number",
+          "type": "string"
+        },
+        "bank_id": {
+          "minLength": 1,
+          "title": "Bank Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bank_id",
+        "account_number"
+      ],
+      "title": "AccountReference",
+      "type": "object"
+    },
+    "Money": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "TransactionBooked": {
+      "additionalProperties": false,
+      "description": "A transaction our bank is party to, as the core banking system booked it.\n\nAmounts are in their original currencies; ingestion converts them to EUR.",
+      "properties": {
+        "amount_paid": {
+          "$ref": "#/$defs/Money"
+        },
+        "amount_received": {
+          "$ref": "#/$defs/Money"
+        },
+        "booked_at": {
+          "format": "date-time",
+          "title": "Booked At",
+          "type": "string"
+        },
+        "from_account": {
+          "$ref": "#/$defs/AccountReference"
+        },
+        "payment_format": {
+          "enum": [
+            "ach",
+            "bitcoin",
+            "cash",
+            "cheque",
+            "credit_card",
+            "reinvestment",
+            "wire"
+          ],
+          "title": "Payment Format",
+          "type": "string"
+        },
+        "to_account": {
+          "$ref": "#/$defs/AccountReference"
+        },
+        "transaction_id": {
+          "minLength": 1,
+          "title": "Transaction Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "transaction_id",
+        "booked_at",
+        "from_account",
+        "to_account",
+        "amount_paid",
+        "amount_received",
+        "payment_format"
+      ],
+      "title": "TransactionBooked",
+      "type": "object"
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "causation_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Causation Id"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "data": {
+      "$ref": "#/$defs/TransactionBooked"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "traceparent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Traceparent"
+    },
+    "type": {
+      "const": "transaction.booked",
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "version",
+    "occurred_at",
+    "correlation_id",
+    "causation_id",
+    "traceparent",
+    "data"
+  ],
+  "title": "transaction.booked.v1",
+  "type": "object"
+}

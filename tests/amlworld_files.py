@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from datagen.amlworld import CSV_HEADER
+from datagen.world import WorldConfig, build_world
 
 OUR_BANK = "012"
 
@@ -46,3 +47,10 @@ def write_patterns_file(
     path = raw_dir / f"{variant}_Patterns.txt"
     path.write_text("\n".join(line for lines in attempts for line in lines) + "\n")
     return path
+
+
+def build_small_world(directory: Path, rows: list[str]) -> Path:
+    raw = directory / "raw"
+    write_transactions_csv(raw, rows)
+    write_patterns_file(raw, [])
+    return build_world(WorldConfig(seed=1), raw, directory / "worlds")

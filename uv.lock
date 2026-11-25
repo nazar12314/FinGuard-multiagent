@@ -532,11 +532,15 @@ name = "finguard-datagen"
 version = "0.1.0"
 source = { editable = "datagen" }
 dependencies = [
+    { name = "finguard" },
     { name = "polars" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "polars", specifier = ">=2.2.0" }]
+requires-dist = [
+    { name = "finguard", editable = "." },
+    { name = "polars", specifier = ">=2.2.0" },
+]
 
 [[package]]
 name = "googleapis-common-protos"

@@ -3,10 +3,11 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from finguard.core.diagnostics import PING_REQUESTED_CONTRACT
+from finguard.modules.ingestion.messages import TRANSACTION_BOOKED_CONTRACT
 from finguard.platform.contracts import MessageContract, message_schema
 
 # A module adds its contracts here when it starts publishing.
-CONTRACTS: tuple[MessageContract, ...] = (PING_REQUESTED_CONTRACT,)
+CONTRACTS: tuple[MessageContract, ...] = (PING_REQUESTED_CONTRACT, TRANSACTION_BOOKED_CONTRACT)
 
 # Subjects no longer produced; their messages stay in topics until retention expires.
 RETIRED: frozenset[str] = frozenset()

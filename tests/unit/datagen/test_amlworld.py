@@ -3,7 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from tests.unit.datagen.amlworld_files import OUR_BANK, csv_row, write_transactions_csv
+from tests.amlworld_files import OUR_BANK, csv_row, write_transactions_csv
 
 from datagen.amlworld import AmlworldFormatError, BankSlice, map_bank_slice, read_bank_rows
 

@@ -4,11 +4,15 @@ version = "0.1.0"
 description = "Builds FinGuard's seeded synthetic world from AMLworld and generated data"
 requires-python = ">=3.12"
 dependencies = [
+    "finguard",
     "polars>=2.2.0",
 ]
 
 [project.scripts]
 finguard-datagen = "datagen.cli:main"
+
+[tool.uv.sources]
+finguard = { workspace = true }
 
 [build-system]
 requires = ["uv_build>=0.9,<0.10"]
