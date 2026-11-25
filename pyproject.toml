@@ -32,6 +32,7 @@ finguard-topics = "finguard.entrypoints.topics:main"
 
 [dependency-groups]
 dev = [
+    "finguard-datagen",
     "httpx2>=2.16.2",
     "hypothesis>=6.170.17",
     "import-linter",
@@ -45,6 +46,12 @@ dev = [
     "types-jsonschema>=4.26.0.20261006",
 ]
 
+[tool.uv.workspace]
+members = ["datagen"]
+
+[tool.uv.sources]
+finguard-datagen = { workspace = true }
+
 [build-system]
 requires = ["uv_build>=0.9,<0.10"]
 build-backend = "uv_build"
@@ -52,7 +59,7 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "datagen/src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "ASYNC", "PT", "TID"]
@@ -78,8 +85,8 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "ASYNC", "PT", "TID
 strict = true
 plugins = ["pydantic.mypy"]
 python_version = "3.12"
-files = ["src", "tests"]
-mypy_path = "src"
+files = ["src", "datagen/src", "tests"]
+mypy_path = ["src", "datagen/src"]
 explicit_package_bases = true
 
 # aiokafka ships no type information.
