@@ -47,6 +47,11 @@ class ConsumerSettings(BaseModel):
     handler_timeout_s: float = Field(default=60.0, gt=0)
 
 
+class SchemaRegistrySettings(BaseModel):
+    # Apicurio's Confluent-compatible API; the default matches the local docker-compose stack.
+    url: str = "http://localhost:8080/apis/ccompat/v7"
+
+
 class OpsSettings(BaseModel):
     # Where a worker serves /healthz, /readyz and /metrics. Each process has its own default
     # port, so they can run side by side on one machine; the API serves these on its own port.
@@ -96,6 +101,7 @@ class Settings(BaseSettings):
     consumer: ConsumerSettings = ConsumerSettings()
     telemetry: TelemetrySettings = TelemetrySettings()
     ops: OpsSettings = OpsSettings()
+    schema_registry: SchemaRegistrySettings = SchemaRegistrySettings()
     outbox_relay: OutboxRelaySettings = OutboxRelaySettings()
 
     @model_validator(mode="after")

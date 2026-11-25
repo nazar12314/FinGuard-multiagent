@@ -13,7 +13,7 @@ implemented, and keep this index in sync with the decision log in Notion.
 | 005 | LLMs only on escalated alerts, never per transaction | Accepted |
 | [006](006-one-postgres-schema-per-module.md) | One Postgres, a schema per module, no cross-schema queries | Accepted |
 | 007 | Tools exposed as MCP servers with per-agent authorization | Accepted |
-| 008 | JSON Schema contracts + registry, backward-compatible evolution | Accepted |
+| [008](008-json-schema-contracts-and-registry.md) | JSON Schema contracts + registry, backward-compatible evolution | Accepted |
 | 009 | pgvector instead of a dedicated vector database | Accepted |
 | 010 | Self-hosted Langfuse via OpenTelemetry | Accepted |
 | 011 | Hybrid LLM: local vLLM for small-tier agents, API for synthesizer and critic | Accepted |

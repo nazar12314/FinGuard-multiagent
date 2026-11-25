@@ -120,6 +120,17 @@ Every log line written inside a span carries its `trace_id`. In Grafana (http://
 the Tempo datasource and paste the `trace_id`, or search with TraceQL, for example
 `{resource.service.name="finguard-ping-consumer" && status=error}`.
 
+## Message contracts
+
+`contracts/` holds one JSON Schema per message type and version, generated from the Pydantic models
+(`uv run finguard-contracts generate`); see [contracts/README.md](contracts/README.md). To publish them to the local
+Apicurio Registry and check a change against what's registered:
+
+```bash
+FINGUARD_ENV=dev uv run finguard-contracts register
+FINGUARD_ENV=dev uv run finguard-contracts check-compatibility
+```
+
 ## Health, readiness and metrics
 
 Every process serves three endpoints for Kubernetes probes and Prometheus. The API serves them on its own port; the
