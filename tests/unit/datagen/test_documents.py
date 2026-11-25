@@ -2,11 +2,12 @@ import json
 from pathlib import Path
 
 import polars as pl
+import pypdfium2 as pdfium
 import pytest
 from tests.amlworld_files import OUR_BANK, csv_row, write_raw_files
 
 from datagen.documents.content import DocumentSpec, document_specs, sample_customers
-from datagen.documents.render import render_html
+from datagen.documents.render import render_html, scan_pdf
 from datagen.world import WorldConfig, build_world
 
 PARQUET_FILES = [
@@ -122,3 +123,55 @@ def test_the_world_holds_a_pdf_and_its_ground_truth_per_document(world: Path) ->
         )
         assert truth["document_id"] == document_id
         assert truth["watermark"] == "SPECIMEN"
+
+
+def all_specs(world: Path) -> list[DocumentSpec]:
+    return [spec for seed in range(3, 13) for spec in specs_for(world, seed)]
+
+
+def test_injections_are_labelled_and_land_in_the_html(world: Path) -> None:
+    injected = [spec for spec in all_specs(world) if spec.injection]
+    assert {spec.injection["technique"] for spec in injected if spec.injection} == {
+        "hidden_text",
+        "visible_note",
+        "metadata",
+    }
+
+    for spec in injected:
+        assert spec.injection is not None
+        html = render_html(spec)
+        assert spec.injection["payload"] in html
+        if spec.injection["technique"] == "metadata":
+            assert f'<meta name="description" content="{spec.injection["payload"]}">' in html
+
+
+def test_white_text_injections_are_never_scanned(world: Path) -> None:
+    specs = all_specs(world)
+
+    assert any(spec.scan for spec in specs)
+    assert not any(
+        spec.scan and spec.injection and spec.injection["technique"] == "hidden_text"
+        for spec in specs
+    )
+
+
+def test_a_scanned_pdf_keeps_its_pages_but_loses_its_text(world: Path, tmp_path: Path) -> None:
+    index = pl.read_parquet(world / "documents.parquet")
+    digital = world / index.get_column("path")[0]
+    copy = tmp_path / digital.name
+    copy.write_bytes(digital.read_bytes())
+
+    scan_pdf(
+        copy, {"rotation_degrees": 1.5, "blur_radius": 0.6, "noise_sigma": 8, "jpeg_quality": 50}
+    )
+    first_scan = copy.read_bytes()
+    copy.write_bytes(digital.read_bytes())
+    scan_pdf(
+        copy, {"rotation_degrees": 1.5, "blur_radius": 0.6, "noise_sigma": 8, "jpeg_quality": 50}
+    )
+
+    original, scanned = pdfium.PdfDocument(digital), pdfium.PdfDocument(copy)
+    assert len(scanned) == len(original)
+    assert original[0].get_textpage().get_text_range().strip()
+    assert not scanned[0].get_textpage().get_text_range().strip()
+    assert copy.read_bytes() == first_scan

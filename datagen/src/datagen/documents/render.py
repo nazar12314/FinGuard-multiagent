@@ -1,14 +1,23 @@
+import io
 import json
 import os
 import sys
+import zlib
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jinja2
+import numpy as np
 import polars as pl
+import pypdfium2 as pdfium
+from PIL import Image, ImageFilter
 
 from datagen.documents.content import DocumentSpec
+
+SCAN_DPI = 150
+SCANNED_ON = datetime(2022, 9, 1, tzinfo=UTC).timetuple()
 
 TEMPLATES = jinja2.Environment(
     loader=jinja2.PackageLoader("datagen.documents", "templates"),
@@ -33,7 +42,9 @@ def write_documents(
         os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib")
     documents_dir.mkdir(parents=True, exist_ok=True)
     truth_dir.mkdir(parents=True, exist_ok=True)
-    jobs = [(render_html(spec), documents_dir / f"{spec.document_id}.pdf") for spec in specs]
+    jobs = [
+        (render_html(spec), documents_dir / f"{spec.document_id}.pdf", spec.scan) for spec in specs
+    ]
     for spec in specs:
         truth = json.dumps(spec.truth(), indent=2, ensure_ascii=False, default=str)
         (truth_dir / f"{spec.document_id}.json").write_text(truth + "\n")
@@ -51,9 +62,39 @@ def write_documents(
     ).sort("document_id")
 
 
-def _write_pdf(job: tuple[str, Path]) -> None:
+def _write_pdf(job: tuple[str, Path, dict[str, float] | None]) -> None:
     # Imported here so that only rendering needs Pango, not every datagen command.
     import weasyprint
 
-    html, path = job
+    html, path, scan = job
     weasyprint.HTML(string=html).write_pdf(path)
+    if scan is not None:
+        scan_pdf(path, scan)
+
+
+def scan_pdf(path: Path, scan: dict[str, float]) -> None:
+    """Replace a digital PDF with what a scanner would make of it: greyscale page images,
+    slightly skewed, blurred, noisy and JPEG-compressed, with no text layer."""
+    seed = zlib.crc32(path.name.encode())
+    noise = np.random.default_rng(seed)
+    pages = []
+    for page in pdfium.PdfDocument(path):
+        image = page.render(scale=SCAN_DPI / 72).to_pil().convert("L")
+        image = image.rotate(scan["rotation_degrees"], expand=True, fillcolor=255)
+        image = image.filter(ImageFilter.GaussianBlur(scan["blur_radius"]))
+        pixels = np.asarray(image, dtype=np.float32)
+        pixels += noise.normal(0, scan["noise_sigma"], pixels.shape)
+        image = Image.fromarray(np.clip(pixels, 0, 255).astype(np.uint8))
+        compressed = io.BytesIO()
+        image.save(compressed, "JPEG", quality=int(scan["jpeg_quality"]))
+        pages.append(Image.open(compressed))
+    pages[0].save(
+        path,
+        "PDF",
+        save_all=True,
+        append_images=pages[1:],
+        resolution=SCAN_DPI,
+        # Fixed, so the same world always produces the same bytes.
+        creationDate=SCANNED_ON,
+        modDate=SCANNED_ON,
+    )

@@ -124,8 +124,17 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
         {
             "document_id": [spec.document_id for spec in specs],
             "anomalies": [[a["type"] for a in spec.anomalies] for spec in specs],
+            "injection": [
+                spec.injection["technique"] if spec.injection else None for spec in specs
+            ],
+            "scanned": [spec.scan is not None for spec in specs],
         },
-        schema={"document_id": pl.String, "anomalies": pl.List(pl.String)},
+        schema={
+            "document_id": pl.String,
+            "anomalies": pl.List(pl.String),
+            "injection": pl.String,
+            "scanned": pl.Boolean,
+        },
     ).sort("document_id")
     for name, frame in files.items():
         frame.write_parquet(staging / name)

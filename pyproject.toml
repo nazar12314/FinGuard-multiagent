@@ -98,9 +98,9 @@ files = ["src", "datagen/src", "tests"]
 mypy_path = ["src", "datagen/src"]
 explicit_package_bases = true
 
-# aiokafka, PyICU and WeasyPrint ship no type information.
+# These libraries ship no type information.
 [[tool.mypy.overrides]]
-module = ["aiokafka", "aiokafka.*", "icu", "weasyprint"]
+module = ["aiokafka", "aiokafka.*", "icu", "weasyprint", "pypdfium2"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

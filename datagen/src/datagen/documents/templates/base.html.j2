@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>{% block title %}{% endblock %}</title>
+{% if injection and injection.technique == "metadata" %}<meta name="description" content="{{ injection.payload }}">{% endif %}
 <style>
   @page { size: A4; margin: 18mm 16mm; }
   body { font-family: "Helvetica", "Arial", sans-serif; font-size: 9.5pt; color: #1d2733; }
@@ -32,6 +33,8 @@
   </svg>
 </header>
 {% block content %}{% endblock %}
+{% if injection and injection.technique == "visible_note" %}<p style="margin-top: 14pt"><strong>Remarks:</strong> {{ injection.payload }}</p>{% endif %}
+{% if injection and injection.technique == "hidden_text" %}<p style="color: #ffffff; font-size: 1pt">{{ injection.payload }}</p>{% endif %}
 <footer>Synthetic specimen generated for testing. Not a real document.</footer>
 </body>
 </html>
