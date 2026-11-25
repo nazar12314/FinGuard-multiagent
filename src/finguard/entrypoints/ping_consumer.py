@@ -1,7 +1,11 @@
 import asyncio
 from contextlib import AsyncExitStack
 
-from finguard.core.container import build_message_consumer, open_session_factory
+from finguard.core.container import (
+    build_message_consumer,
+    consumer_heartbeat,
+    open_session_factory,
+)
 from finguard.core.diagnostics import PING_CONSUMER, PING_REQUESTED, ping_handler
 from finguard.core.logging import LogEvent, configure_logging, get_logger
 from finguard.core.ops import Readiness, start_ops_server, stop_on_signals
@@ -17,6 +21,7 @@ OPS_PORT = 9102
 async def run(settings: Settings) -> None:
     stop = asyncio.Event()
     readiness = Readiness()
+    heartbeat = consumer_heartbeat(settings)
     stop_on_signals(stop, readiness)
 
     logger.info(LogEvent.APP_STARTING, env=settings.env, process="ping-consumer")
@@ -28,8 +33,9 @@ async def run(settings: Settings) -> None:
             topics=[DIAGNOSTICS_PINGS],
             handlers={PING_REQUESTED: ping_handler(open_session_factory(settings, resources))},
             readiness=readiness,
+            heartbeat=heartbeat,
         )
-        await start_ops_server(settings.ops, readiness, resources, default_port=OPS_PORT)
+        await start_ops_server(settings.ops, readiness, heartbeat, resources, default_port=OPS_PORT)
         await consumer.run(stop)
     logger.info(LogEvent.APP_STOPPED)
 

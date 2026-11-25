@@ -11,9 +11,14 @@ from opentelemetry.trace import SpanKind
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from finguard.core.container import build_message_consumer, open_session_factory
+from finguard.core.container import (
+    build_message_consumer,
+    consumer_heartbeat,
+    open_session_factory,
+)
 from finguard.core.diagnostics import PING_CONSUMER, PING_REQUESTED, ping_handler
 from finguard.core.http.app import create_app
+from finguard.core.ops import Readiness
 from finguard.core.settings import ConsumerSettings, DatabaseSettings, KafkaSettings, Settings
 from finguard.infrastructure.kafka.publisher import (
     KafkaPublisher,
@@ -81,6 +86,8 @@ async def consume_until(settings: Settings, done: Callable[[], bool]) -> None:
             name=PING_CONSUMER,
             topics=[DIAGNOSTICS_PINGS],
             handlers={PING_REQUESTED: ping_handler(open_session_factory(settings, resources))},
+            readiness=Readiness(),
+            heartbeat=consumer_heartbeat(settings),
         )
         task = asyncio.create_task(consumer.run(stop))
         try:
@@ -229,7 +236,7 @@ async def test_a_ping_is_one_trace_from_the_api_request_to_its_handler(
         for span in finished
         if span.kind is SpanKind.SERVER and span.name == "POST /api/v1/dev/pings"
     )
-    publish = next(span for span in finished if span.name == "publish diagnostics.pings")
+    publish = next(span for span in finished if span.name == "send diagnostics.pings")
     process = next(span for span in finished if span.name == "process diagnostics.pings")
     handle = next(span for span in finished if span.name == "handle diagnostics.ping.requested")
     for parent, child in ((request, publish), (publish, process), (process, handle)):

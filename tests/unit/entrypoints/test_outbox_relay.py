@@ -6,8 +6,14 @@ from uuid import uuid4
 
 import pytest
 
+from finguard.core.ops import Heartbeat
 from finguard.core.settings import OutboxRelaySettings
-from finguard.entrypoints.outbox_relay import RelayMustRestart, relay_until_stopped, retry_delay
+from finguard.entrypoints.outbox_relay import (
+    RelayMustRestart,
+    relay_heartbeat,
+    relay_until_stopped,
+    retry_delay,
+)
 from finguard.infrastructure.outbox.relay import MessageParked
 
 LogLines = Callable[[], list[dict[str, Any]]]
@@ -47,9 +53,15 @@ class ScriptedRelay:
         return 3
 
 
-async def run(relay: ScriptedRelay, stop: asyncio.Event, **settings: Any) -> None:
+async def run(
+    relay: ScriptedRelay, stop: asyncio.Event, heartbeat: Heartbeat | None = None, **settings: Any
+) -> None:
+    relay_settings = OutboxRelaySettings(**settings)
     await asyncio.wait_for(
-        relay_until_stopped(relay, OutboxRelaySettings(**settings), stop), timeout=2
+        relay_until_stopped(
+            relay, relay_settings, stop, heartbeat or relay_heartbeat(relay_settings)
+        ),
+        timeout=2,
     )
 
 
@@ -155,14 +167,45 @@ async def test_the_loop_returns_once_stopped() -> None:
     assert relay.publish_calls == 0
 
 
-async def test_the_backlog_is_measured_after_every_publish(log_lines: LogLines) -> None:
+async def test_the_backlog_is_measured_on_a_timer_not_after_every_batch() -> None:
+    stop = asyncio.Event()
+    relay = ScriptedRelay([2, 2, 2, 2], stop)
+
+    await run(relay, stop, batch_size=2, backlog_interval_s=60)
+
+    assert relay.publish_calls == 5
+    assert relay.backlog_measurements == 1
+
+
+async def test_the_backlog_is_still_measured_while_publishing_fails() -> None:
+    stop = asyncio.Event()
+    relay = ScriptedRelay([ConnectionError("kafka unavailable")] * 3, stop)
+
+    await run(relay, stop, poll_interval_s=0.02, backlog_interval_s=0.01)
+
+    assert relay.backlog_measurements == 4
+
+
+async def test_a_failed_backlog_measurement_does_not_stop_publishing(
+    log_lines: LogLines,
+) -> None:
     stop = asyncio.Event()
     relay = ScriptedRelay([1, 1], stop)
     relay.backlog_error = ConnectionError("database unavailable")
 
-    await run(relay, stop, poll_interval_s=0.01)
+    await run(relay, stop, poll_interval_s=0.01, backlog_interval_s=0.001)
 
-    # A failed measurement is logged and doesn't stop publishing.
-    assert relay.backlog_measurements == 3
     assert relay.publish_calls == 3
     assert "outbox.backlog_unmeasured" in events(log_lines)
+
+
+async def test_every_loop_round_beats_the_heartbeat() -> None:
+    stop = asyncio.Event()
+    relay = ScriptedRelay([1, 1], stop)
+    heartbeat = Heartbeat(stale_after_s=0.05)
+    await asyncio.sleep(0.1)
+    assert heartbeat.stale
+
+    await run(relay, stop, heartbeat, poll_interval_s=0.01)
+
+    assert not heartbeat.stale

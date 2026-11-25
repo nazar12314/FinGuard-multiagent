@@ -8,7 +8,7 @@ from aiokafka import AIOKafkaProducer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finguard.core.auth import Authenticator, DevHeaderAuthenticator
-from finguard.core.ops import Readiness
+from finguard.core.ops import Heartbeat, Readiness
 from finguard.core.settings import AuthSettings, Settings
 from finguard.infrastructure.db.engine import (
     check_database,
@@ -65,14 +65,13 @@ async def build_api_container(settings: Settings, resources: AsyncExitStack) -> 
 
 
 async def build_outbox_relay(
-    settings: Settings, resources: AsyncExitStack, readiness: Readiness | None = None
+    settings: Settings, resources: AsyncExitStack, readiness: Readiness
 ) -> OutboxRelay:
     relay_settings = settings.outbox_relay
     session_factory = open_session_factory(settings, resources)
     producer = await _start_producer(settings, resources, relay_settings.publish_timeout_s)
-    if readiness is not None:
-        readiness.require("database", partial(check_database, session_factory))
-        readiness.require("kafka", partial(check_kafka, producer))
+    readiness.require("database", partial(check_database, session_factory))
+    readiness.require("kafka", partial(check_kafka, producer))
 
     return OutboxRelay(
         session_factory,
@@ -89,17 +88,13 @@ async def build_message_consumer(
     name: str,
     topics: Sequence[Topic],
     handlers: Mapping[str, MessageHandler],
-    readiness: Readiness | None = None,
+    readiness: Readiness,
+    heartbeat: Heartbeat,
 ) -> KafkaMessageConsumer:
     """
     Wire a consumer group named `name` for `topics`, including their retry topics.
     """
-    policy = RetryPolicy(
-        attempts=settings.consumer.attempts,
-        attempt_backoff_s=settings.consumer.attempt_backoff_s,
-        handler_timeout_s=settings.consumer.handler_timeout_s,
-        retry_delays_s=settings.kafka.retry_delays_s,
-    )
+    policy = _retry_policy(settings)
     session_factory = open_session_factory(settings, resources)
     producer = await _start_producer(settings, resources, _CONSUMER_PRODUCER_STOP_TIMEOUT_S)
     consumer = create_kafka_consumer(
@@ -111,12 +106,32 @@ async def build_message_consumer(
     resources.push_async_callback(consumer.stop)
 
     await consumer.start()
-    if readiness is not None:
-        readiness.require("database", partial(check_database, session_factory))
-        readiness.require("kafka", partial(check_kafka, producer))
+    readiness.require("database", partial(check_database, session_factory))
+    readiness.require("kafka", partial(check_kafka, producer))
 
     return KafkaMessageConsumer(
-        consumer, producer, session_factory, handlers, name=name, policy=policy
+        consumer,
+        producer,
+        session_factory,
+        handlers,
+        name=name,
+        policy=policy,
+        heartbeat=heartbeat.beat,
+    )
+
+
+def consumer_heartbeat(settings: Settings) -> Heartbeat:
+    # One poll may take as long as Kafka tolerates, plus handing a copy on and committing.
+    policy = _retry_policy(settings)
+    return Heartbeat(stale_after_s=policy.max_poll_interval_s + 60)
+
+
+def _retry_policy(settings: Settings) -> RetryPolicy:
+    return RetryPolicy(
+        attempts=settings.consumer.attempts,
+        attempt_backoff_s=settings.consumer.attempt_backoff_s,
+        handler_timeout_s=settings.consumer.handler_timeout_s,
+        retry_delays_s=settings.kafka.retry_delays_s,
     )
 
 

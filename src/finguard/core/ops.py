@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import signal
+import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AsyncExitStack
 
@@ -33,6 +34,9 @@ class Readiness:
     async def report(self) -> tuple[bool, dict[str, str]]:
         if self.draining:
             return False, {"process": "shutting down"}
+        if not self._checks:
+            # Fail closed: a process wired without checks would otherwise be ready forever.
+            return False, {"process": "no readiness checks registered"}
         results = await asyncio.gather(*(self._run(check) for check in self._checks.values()))
         report = dict(zip(self._checks, results, strict=True))
         return all(result == "ok" for result in report.values()), report
@@ -46,9 +50,39 @@ class Readiness:
         return "ok"
 
 
-def ops_routes(readiness_of: Callable[[Request], Readiness]) -> list[BaseRoute]:
+class Heartbeat:
+    """Shows that a worker's main loop still goes round, not just that its event loop runs.
+
+    A worker stuck in an await answers HTTP but stops beating, so liveness fails and the
+    orchestrator restarts it.
+    """
+
+    def __init__(self, *, stale_after_s: float) -> None:
+        self._stale_after_s = stale_after_s
+        self._last_beat = time.monotonic()
+
+    def beat(self) -> None:
+        self._last_beat = time.monotonic()
+
+    @property
+    def silent_for_s(self) -> float:
+        return time.monotonic() - self._last_beat
+
+    @property
+    def stale(self) -> bool:
+        return self.silent_for_s > self._stale_after_s
+
+
+def ops_routes(
+    readiness_of: Callable[[Request], Readiness], heartbeat: Heartbeat | None = None
+) -> list[BaseRoute]:
     async def healthz(request: Request) -> Response:
-        # Answering at all shows the event loop is alive, which is what liveness asks.
+        # Without a heartbeat (the API), answering at all shows the event loop is alive.
+        if heartbeat is not None and heartbeat.stale:
+            return JSONResponse(
+                {"status": "stalled", "silent_for_s": round(heartbeat.silent_for_s, 1)},
+                status_code=503,
+            )
         return JSONResponse({"status": "ok"})
 
     async def readyz(request: Request) -> Response:
@@ -78,8 +112,8 @@ class _ServerWithoutSignals(uvicorn.Server):
 class OpsServer:
     """Serves /healthz, /readyz and /metrics for a process that isn't an HTTP server."""
 
-    def __init__(self, readiness: Readiness, *, host: str, port: int) -> None:
-        app = Starlette(routes=ops_routes(lambda _: readiness))
+    def __init__(self, readiness: Readiness, heartbeat: Heartbeat, *, host: str, port: int) -> None:
+        app = Starlette(routes=ops_routes(lambda _: readiness, heartbeat))
         self._server = _ServerWithoutSignals(
             uvicorn.Config(
                 app, host=host, port=port, log_config=None, access_log=False, lifespan="off"
@@ -91,7 +125,9 @@ class OpsServer:
         self._task = asyncio.create_task(self._server.serve())
         while not self._server.started:
             if self._task.done():
-                await self._task  # surfaces a failure to bind the port
+                # uvicorn logs a failure to bind the port and raises SystemExit(1) in the
+                # task; awaiting it re-raises that, which ends the process.
+                await self._task
             await asyncio.sleep(0.01)
 
     async def stop(self) -> None:
@@ -113,8 +149,13 @@ def stop_on_signals(stop: asyncio.Event, readiness: Readiness) -> None:
 
 
 async def start_ops_server(
-    settings: OpsSettings, readiness: Readiness, resources: AsyncExitStack, *, default_port: int
+    settings: OpsSettings,
+    readiness: Readiness,
+    heartbeat: Heartbeat,
+    resources: AsyncExitStack,
+    *,
+    default_port: int,
 ) -> None:
-    server = OpsServer(readiness, host=settings.host, port=settings.port or default_port)
+    server = OpsServer(readiness, heartbeat, host=settings.host, port=settings.port or default_port)
     await server.start()
     resources.push_async_callback(server.stop)

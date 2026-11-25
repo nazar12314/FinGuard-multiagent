@@ -15,8 +15,8 @@ from finguard.infrastructure.kafka.publisher import MessageRejected, OutgoingMes
 from finguard.infrastructure.outbox.tables import outbox
 from finguard.infrastructure.tracing import (
     context_from,
-    current_traceparent,
     record_failure,
+    traceparent_of,
     tracer,
 )
 
@@ -96,15 +96,16 @@ class OutboxRelay:
 
             # One message at a time, so a refused message is known exactly and the ones
             # before it count as sent.
-            published: list[UUID] = []
+            published: list[tuple[UUID, str]] = []
             async with asyncio.timeout(self._publish_timeout_s):
                 for row in rows:
                     with tracer.start_as_current_span(
-                        f"publish {row.destination}",
+                        f"send {row.destination}",
                         context=context_from(row.payload.get("traceparent")),
                         kind=SpanKind.PRODUCER,
                         attributes={
                             "messaging.system": "kafka",
+                            "messaging.operation.name": "send",
                             "messaging.operation.type": "send",
                             "messaging.destination.name": row.destination,
                             "messaging.message.id": str(row.id),
@@ -114,11 +115,15 @@ class OutboxRelay:
                     ) as span:
                         try:
                             await self._publisher.publish(
-                                _to_outgoing(row.destination, row.key, row.payload)
+                                _to_outgoing(
+                                    row.destination,
+                                    row.key,
+                                    row.payload,
+                                    traceparent=traceparent_of(span),
+                                )
                             )
                         except MessageRejected as rejection:
                             record_failure(span, rejection)
-                            PARKED.labels(row.destination).inc()
                             parked = MessageParked(row.id, row.destination, str(rejection))
                             await session.execute(
                                 update(outbox)
@@ -126,18 +131,24 @@ class OutboxRelay:
                                 .values(failed_at=func.now(), last_error=str(rejection))
                             )
                             break
-                        except Exception as error:
+                        # CancelledError too: the batch timeout cancels a stuck publish.
+                        except (Exception, asyncio.CancelledError) as error:
                             record_failure(span, error)
                             raise
-                    PUBLISHED.labels(row.destination).inc()
-                    published.append(row.id)
+                    published.append((row.id, row.destination))
 
             if published:
                 await session.execute(
-                    update(outbox).where(outbox.c.id.in_(published)).values(published_at=func.now())
+                    update(outbox)
+                    .where(outbox.c.id.in_([message_id for message_id, _ in published]))
+                    .values(published_at=func.now())
                 )
 
+        # Counted once committed: a failed commit leaves the messages pending, to be sent again.
+        for _, topic in published:
+            PUBLISHED.labels(topic).inc()
         if parked:
+            PARKED.labels(parked.topic).inc()
             raise parked
         return len(published)
 
@@ -163,10 +174,11 @@ class OutboxRelay:
             return cast(CursorResult[Any], result).rowcount
 
 
-def _to_outgoing(topic: str, key: str, envelope: Mapping[str, Any]) -> OutgoingMessage:
-    # The header carries the publish span, so the consumer's span becomes its child and can
+def _to_outgoing(
+    topic: str, key: str, envelope: Mapping[str, Any], *, traceparent: str | None
+) -> OutgoingMessage:
+    # The header carries the send span, so the consumer's span becomes its child and can
     # start before the payload is parsed. The payload keeps the writer's context.
-    traceparent = current_traceparent()
     return OutgoingMessage(
         topic=topic,
         key=key,

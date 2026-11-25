@@ -54,10 +54,13 @@ HANDLING_DURATION = Histogram(
     "finguard_consumer_handling_seconds",
     "Time to handle one delivery, in-place retries included",
     ["consumer", "message_type"],
+    # Up to several handler timeouts (60 s each by default) plus backoff.
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
 )
 LAG = Gauge(
     "finguard_consumer_lag",
-    "Messages between the consumer's position and the end of the partition",
+    "Messages between the consumer's position and the end of the partition. On retry"
+    " topics this includes copies still waiting out their delay.",
     ["consumer", "topic", "partition"],
 )
 _LAG_INTERVAL_S = 5.0
@@ -84,6 +87,12 @@ class RetryPolicy:
     def longest_handling_s(self) -> float:
         backoff = sum(self.attempt_backoff_s * 2.0**attempt for attempt in range(self.attempts - 1))
         return self.attempts * self.handler_timeout_s + backoff
+
+    @property
+    def max_poll_interval_s(self) -> float:
+        # The broker drops a consumer from the group if handling one message, retries
+        # included, takes longer than this between polls.
+        return max(300.0, self.longest_handling_s + 60)
 
 
 def is_permanent(error: Exception) -> bool:
@@ -121,9 +130,7 @@ def create_kafka_consumer(
         enable_auto_commit=False,
         # A new consumer group starts from the oldest retained message, so nothing is missed.
         auto_offset_reset="earliest",
-        # The broker would drop the consumer from the group if handling one message,
-        # retries included, took longer than this.
-        max_poll_interval_ms=int(max(300.0, policy.longest_handling_s + 60) * 1000),
+        max_poll_interval_ms=int(policy.max_poll_interval_s * 1000),
     )
 
 
@@ -144,6 +151,7 @@ class KafkaMessageConsumer:
         *,
         name: str,
         policy: RetryPolicy,
+        heartbeat: Callable[[], None],
     ) -> None:
         self._consumer = consumer
         self._producer = producer
@@ -151,6 +159,7 @@ class KafkaMessageConsumer:
         self._handlers = handlers
         self._name = name
         self._policy = policy
+        self._heartbeat = heartbeat
         self._paused_until: dict[TopicPartition, float] = {}
         self._stop = asyncio.Event()
         self._lag_partitions: set[TopicPartition] = set()
@@ -162,6 +171,7 @@ class KafkaMessageConsumer:
         """
         self._stop = stop
         while not stop.is_set():
+            self._heartbeat()
             self._resume_due_partitions()
             if time.monotonic() - self._lag_measured_at >= _LAG_INTERVAL_S:
                 await self._measure_lag()
@@ -198,6 +208,7 @@ class KafkaMessageConsumer:
             kind=SpanKind.CONSUMER,
             attributes={
                 "messaging.system": "kafka",
+                "messaging.operation.name": "process",
                 "messaging.operation.type": "process",
                 "messaging.destination.name": record.topic,
                 "messaging.destination.partition.id": str(record.partition),
@@ -206,8 +217,15 @@ class KafkaMessageConsumer:
             },
             record_exception=False,
             set_status_on_exception=False,
-        ):
-            await self._process(record)
+        ) as span:
+            try:
+                await self._process(record)
+            except _Stopping:
+                raise
+            except Exception as error:
+                # Handing a copy on failed, so the message stays uncommitted.
+                record_failure(span, error)
+                raise
         await self._commit(partition, record)
 
     async def _measure_lag(self) -> None:
@@ -220,7 +238,12 @@ class KafkaMessageConsumer:
             end = self._consumer.highwater(partition)
             if end is None:
                 continue  # nothing fetched from this partition yet
-            position = await self._consumer.position(partition)
+            try:
+                position = await self._consumer.position(partition)
+            except IllegalStateError:
+                continue  # revoked by a rebalance during an earlier await
+            if not self._owns(partition):
+                continue  # revoked while its position was fetched; dropped next round
             LAG.labels(self._name, partition.topic, str(partition.partition)).set(
                 max(end - position, 0)
             )
@@ -280,6 +303,7 @@ class KafkaMessageConsumer:
         try:
             envelope = Envelope.model_validate_json(record.value)
         except ValidationError as error:
+            record_failure(trace.get_current_span(), error)
             await self._hand_on(record, dead_letter_topic(source), error)
             return
 
@@ -305,18 +329,7 @@ class KafkaMessageConsumer:
             error = await self._attempt(envelope, handler, attempt, topic)
             if error is None:
                 return None
-            permanent = is_permanent(error)
-            HANDLER_FAILURES.labels(self._name, envelope.type, str(permanent).lower()).inc()
-            logger.warning(
-                ConsumerEvent.HANDLER_FAILED,
-                message_id=str(envelope.id),
-                message_type=envelope.type,
-                attempt=attempt,
-                permanent=permanent,
-                error=describe_error(error),
-                frames=_frames(error),
-            )
-            if permanent or attempt >= self._policy.attempts:
+            if is_permanent(error) or attempt >= self._policy.attempts:
                 return error
             backoff = self._policy.attempt_backoff_s * 2 ** (attempt - 1)
             with suppress(TimeoutError):
@@ -349,6 +362,18 @@ class KafkaMessageConsumer:
                 return None
             except Exception as error:
                 record_failure(span, error)
+                permanent = is_permanent(error)
+                HANDLER_FAILURES.labels(self._name, envelope.type, str(permanent).lower()).inc()
+                # Logged inside the attempt's span, so the line points at the failed attempt.
+                logger.warning(
+                    ConsumerEvent.HANDLER_FAILED,
+                    message_id=str(envelope.id),
+                    message_type=envelope.type,
+                    attempt=attempt,
+                    permanent=permanent,
+                    error=describe_error(error),
+                    frames=_frames(error),
+                )
                 return error
 
     async def _hand_on(self, record: Any, topic: str, error: Exception) -> None:

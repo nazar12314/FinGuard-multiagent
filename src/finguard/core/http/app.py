@@ -1,3 +1,4 @@
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from importlib.metadata import version
@@ -47,7 +48,15 @@ def create_app(
     # One server span per request; the per-message receive and send spans are only noise.
     FastAPIInstrumentor.instrument_app(
         app,
-        excluded_urls="docs,openapi.json,healthz,readyz,metrics",
+        excluded_urls=_exact_paths(
+            "/docs", "/docs/oauth2-redirect", "/openapi.json", "/healthz", "/readyz", "/metrics"
+        ),
         exclude_spans=["receive", "send"],
     )
     return app
+
+
+def _exact_paths(*paths: str) -> str:
+    # The instrumentation searches each pattern anywhere in the URL (scheme://host/path,
+    # without the query), so a bare "docs" would also hide /cases/docs.
+    return ",".join(rf"^[a-z]+://[^/]+{re.escape(path)}$" for path in paths)

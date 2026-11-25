@@ -23,6 +23,8 @@ HTTP_REQUESTS = Counter(
 HTTP_REQUEST_DURATION = Histogram(
     "finguard_http_request_duration_seconds", "Time to handle an HTTP request", ["method", "route"]
 )
+# Any token is a valid method, so anything else is counted as "other" to bound the series.
+_KNOWN_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
 
 
 class RequestContextMiddleware:
@@ -71,8 +73,9 @@ class RequestContextMiddleware:
         finally:
             duration_s = time.perf_counter() - started_at
             route = getattr(scope.get("route"), "path", "unmatched")
-            HTTP_REQUESTS.labels(scope["method"], route, str(status_code)).inc()
-            HTTP_REQUEST_DURATION.labels(scope["method"], route).observe(duration_s)
+            method = scope["method"] if scope["method"] in _KNOWN_METHODS else "other"
+            HTTP_REQUESTS.labels(method, route, str(status_code)).inc()
+            HTTP_REQUEST_DURATION.labels(method, route).observe(duration_s)
             logger.info(
                 LogEvent.HTTP_REQUEST_COMPLETED,
                 method=scope["method"],

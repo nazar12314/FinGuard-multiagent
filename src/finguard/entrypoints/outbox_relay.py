@@ -6,7 +6,7 @@ from typing import Protocol
 
 from finguard.core.container import build_outbox_relay
 from finguard.core.logging import LogEvent, configure_logging, get_logger
-from finguard.core.ops import Readiness, start_ops_server, stop_on_signals
+from finguard.core.ops import Heartbeat, Readiness, start_ops_server, stop_on_signals
 from finguard.core.settings import OutboxRelaySettings, Settings, load_settings_or_exit
 from finguard.core.telemetry import configure_telemetry
 from finguard.infrastructure.outbox.relay import MessageParked
@@ -33,15 +33,22 @@ def retry_delay(consecutive_failures: int, settings: OutboxRelaySettings) -> flo
     return min(exponential, settings.max_retry_delay_s)
 
 
+def relay_heartbeat(settings: OutboxRelaySettings) -> Heartbeat:
+    # One loop round is at most a publish timeout and the longest retry wait, plus a few
+    # database round trips.
+    return Heartbeat(stale_after_s=settings.publish_timeout_s + settings.max_retry_delay_s + 60)
+
+
 async def relay_until_stopped(
-    relay: Relay, settings: OutboxRelaySettings, stop: asyncio.Event
+    relay: Relay, settings: OutboxRelaySettings, stop: asyncio.Event, heartbeat: Heartbeat
 ) -> None:
     """Publish until `stop` is set. Raise RelayMustRestart when a fresh process is needed."""
     retention = timedelta(days=settings.retention_days)
-    next_prune_at = time.monotonic()
+    next_prune_at = next_measure_at = time.monotonic()
     consecutive_failures = 0
 
     while not stop.is_set():
+        heartbeat.beat()
         if time.monotonic() >= next_prune_at:
             next_prune_at = time.monotonic() + settings.prune_interval_s
             try:
@@ -50,6 +57,15 @@ async def relay_until_stopped(
                 logger.exception(LogEvent.OUTBOX_PRUNE_FAILED)
             else:
                 logger.info(LogEvent.OUTBOX_PRUNED, count=pruned)
+
+        # On a timer, not after each batch: counting the backlog reads every pending row,
+        # and it must keep updating while publishing fails, which is when it matters.
+        if time.monotonic() >= next_measure_at:
+            next_measure_at = time.monotonic() + settings.backlog_interval_s
+            try:
+                await relay.measure_backlog()
+            except Exception:
+                logger.exception(LogEvent.OUTBOX_BACKLOG_UNMEASURED)
 
         try:
             published = await relay.publish_pending()
@@ -78,10 +94,6 @@ async def relay_until_stopped(
         consecutive_failures = 0
         if published:
             logger.info(LogEvent.OUTBOX_BATCH_PUBLISHED, count=published)
-        try:
-            await relay.measure_backlog()
-        except Exception:
-            logger.exception(LogEvent.OUTBOX_BACKLOG_UNMEASURED)
         # A full batch means more messages are probably waiting, so go again at once.
         if published < settings.batch_size:
             await _wait(stop, settings.poll_interval_s)
@@ -95,13 +107,14 @@ async def _wait(stop: asyncio.Event, seconds: float) -> None:
 async def run(settings: Settings) -> None:
     stop = asyncio.Event()
     readiness = Readiness()
+    heartbeat = relay_heartbeat(settings.outbox_relay)
     stop_on_signals(stop, readiness)
 
     logger.info(LogEvent.APP_STARTING, env=settings.env, process="outbox-relay")
     async with AsyncExitStack() as resources:
         relay = await build_outbox_relay(settings, resources, readiness)
-        await start_ops_server(settings.ops, readiness, resources, default_port=OPS_PORT)
-        await relay_until_stopped(relay, settings.outbox_relay, stop)
+        await start_ops_server(settings.ops, readiness, heartbeat, resources, default_port=OPS_PORT)
+        await relay_until_stopped(relay, settings.outbox_relay, stop, heartbeat)
     logger.info(LogEvent.APP_STOPPED)
 
 

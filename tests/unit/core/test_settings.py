@@ -35,11 +35,30 @@ def test_prod_refuses_to_fall_back_to_the_local_stack(variable: str) -> None:
         Settings(env="prod")
 
 
+def test_prod_refuses_to_export_traces_to_the_local_collector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FINGUARD_TELEMETRY__ENABLED", "true")
+
+    with pytest.raises(ValidationError, match=r"telemetry\.otlp_endpoint must be set explicitly"):
+        Settings(env="prod")
+
+
+def test_prod_without_tracing_needs_no_collector(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINGUARD_TELEMETRY__ENABLED", "false")
+
+    with pytest.raises(ValidationError) as error:
+        Settings(env="prod")
+
+    assert "otlp_endpoint" not in str(error.value)
+
+
 def test_prod_accepts_explicit_connection_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FINGUARD_DATABASE__URL", "postgresql+asyncpg://app:pw@db/finguard")
     monkeypatch.setenv("FINGUARD_KAFKA__BOOTSTRAP_SERVERS", "kafka:9092")
     monkeypatch.setenv("FINGUARD_KAFKA__REPLICATION_FACTOR", "3")
     monkeypatch.setenv("FINGUARD_TELEMETRY__ENABLED", "true")
+    monkeypatch.setenv("FINGUARD_TELEMETRY__OTLP_ENDPOINT", "http://otel-collector:4318")
 
     with pytest.raises(ValidationError) as error:
         Settings(env="prod")
