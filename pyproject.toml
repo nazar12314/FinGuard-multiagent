@@ -35,12 +35,14 @@ dev = [
     "httpx2>=2.16.2",
     "hypothesis>=6.170.17",
     "import-linter",
+    "jsonschema>=4.26.0",
     "mypy",
     "pre-commit",
     "pytest",
     "pytest-asyncio",
     "ruff",
     "testcontainers[kafka,postgres]>=4.15.0",
+    "types-jsonschema>=4.26.0.20261006",
 ]
 
 [build-system]

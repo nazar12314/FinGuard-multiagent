@@ -27,10 +27,14 @@ Option 2. Messages stay readable JSON, Pydantic validates them in code, and the 
   several message types share a topic. Every subject has the BACKWARD rule: a new schema must accept data written
   under the previous one.
 - **CI.** A job starts Apicurio, registers the base branch's contract files and asks the registry whether the
-  branch's files are compatible. A breaking change needs a new version, which is a new contract and subject.
+  branch's files are compatible. A breaking change needs a new version, which is a new contract and subject. A
+  contract removed since the base fails the job unless it is declared retired.
+- **Draft 7.** Every file declares JSON Schema draft 7. Apicurio reads a schema without `$schema` as draft 4, where
+  exclusive bounds and `const` mean something else, so it would reject or wave through changes to them.
 - **Closed data models.** Under the registry's rules an open object can't gain a field compatibly, because old data
-  could already carry that name with any type. So every `data` model sets `extra="forbid"`, which lets it add
-  optional fields. The envelope stays open so that consumers ignore fields they don't know; adding an envelope field
+  could already carry that name with any type. So every `data` model, nested ones included, sets `extra="forbid"`,
+  which lets it add optional fields. Fixed-length tuples are refused too: draft 7 has no `prefixItems`, so the
+  registry can't see their elements change. The envelope stays open so that consumers ignore fields they don't know; adding an envelope field
   is therefore a breaking change for the registry and should be rare.
 
 ## Consequences

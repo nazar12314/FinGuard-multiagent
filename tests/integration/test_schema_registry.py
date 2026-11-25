@@ -1,12 +1,15 @@
 import json
 from collections.abc import Iterator
+from typing import Literal
 from uuid import uuid4
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from finguard.infrastructure.schema_registry import SchemaRegistry
+from finguard.platform.contracts import MessageContract, message_schema
 
 # Same image as deploy/compose/compose.yaml.
 APICURIO_IMAGE = "apicurio/apicurio-registry:3.3.5"
@@ -89,3 +92,38 @@ def test_an_open_schema_cannot_gain_a_field_compatibly(
     )
 
     assert registry.is_compatible(subject, gains_note) is False
+
+
+class Payment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount_eur: float = Field(gt=0)
+    channel: Literal["sepa"] = "sepa"
+
+
+class CardPayment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount_eur: float = Field(gt=0)
+    channel: Literal["card"] = "card"
+
+
+def contract_schema(subject: str, data: type[BaseModel]) -> str:
+    message_type = subject.removesuffix(".v1")
+    return json.dumps(message_schema(MessageContract(message_type, 1, data)))
+
+
+def test_a_generated_schema_with_a_strict_bound_can_be_checked_again(
+    registry: SchemaRegistry, subject: str
+) -> None:
+    registry.register(subject, contract_schema(subject, Payment))
+
+    assert registry.is_compatible(subject, contract_schema(subject, Payment)) is True
+
+
+def test_changing_a_fixed_value_is_a_breaking_change(
+    registry: SchemaRegistry, subject: str
+) -> None:
+    registry.register(subject, contract_schema(subject, Payment))
+
+    assert registry.is_compatible(subject, contract_schema(subject, CardPayment)) is False
