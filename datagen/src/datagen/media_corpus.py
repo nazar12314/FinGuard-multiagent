@@ -12,11 +12,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-import anthropic
+import openai
 from pydantic import BaseModel, ConfigDict
 
 CORPUS = Path(__file__).parent / "corpus" / "adverse_media.jsonl"
-MODEL = "claude-opus-5-5"
+MODEL = "gpt-5.5"
 CONCURRENCY = 8
 
 RELEVANT_ADVERSE = "relevant_adverse"
@@ -152,30 +152,25 @@ def usable(draft: ArticleDraft, brief: Brief) -> bool:
     return required <= found <= set(brief.placeholders) and not re.search(r"\{\{|\}\}", draft.body)
 
 
-class ClaudeWriter:
-    def __init__(self, client: anthropic.AsyncAnthropic | None = None) -> None:
-        self._client = client or anthropic.AsyncAnthropic()
+class OpenAIWriter:
+    def __init__(self, client: openai.AsyncOpenAI | None = None) -> None:
+        self._client = client or openai.AsyncOpenAI()
 
     async def write(self, brief: Brief) -> ArticleDraft | None:
         placeholders = ", ".join(f"{{{name}}}" for name in brief.placeholders)
-        response = await self._client.beta.messages.create(
+        response = await self._client.responses.parse(
             model=MODEL,
-            max_tokens=4000,
             # Short news pieces don't need deep reasoning.
-            output_config={
-                "effort": "low",
-                "format": {"type": "json_schema", "schema": ArticleDraft.model_json_schema()},
-            },
-            # Crime reporting can trip a safety classifier; another model then writes it.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            system=SYSTEM.replace("{placeholders}", placeholders),
-            messages=[{"role": "user", "content": brief.prompt()}],
+            reasoning={"effort": "low"},
+            max_output_tokens=4000,
+            instructions=SYSTEM.replace("{placeholders}", placeholders),
+            input=brief.prompt(),
+            text_format=ArticleDraft,
         )
-        if response.stop_reason != "end_turn":
+        # A refusal or a cut-off answer leaves nothing parsed.
+        if response.status != "completed":
             return None
-        text = next(block.text for block in response.content if block.type == "text")
-        return ArticleDraft.model_validate_json(text)
+        return response.output_parsed
 
 
 async def write_corpus(writer: Writer, corpus: Path = CORPUS, attempts: int = 2) -> int:

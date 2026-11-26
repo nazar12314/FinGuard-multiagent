@@ -1,4 +1,3 @@
-import json
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +9,7 @@ from datagen.media_corpus import (
     IRRELEVANT_NAMESAKE,
     ArticleDraft,
     Brief,
-    ClaudeWriter,
+    OpenAIWriter,
     briefs,
     read_corpus,
     usable,
@@ -100,37 +99,36 @@ async def test_leaves_out_a_brief_that_keeps_failing(tmp_path: Path) -> None:
     assert read_corpus(tmp_path / "corpus.jsonl") == []
 
 
-class FakeMessages:
-    def __init__(self, stop_reason: str, text: str) -> None:
-        self.stop_reason, self.text = stop_reason, text
+class FakeResponses:
+    def __init__(self, status: str, parsed: ArticleDraft | None) -> None:
+        self.status, self.parsed = status, parsed
         self.request: dict[str, Any] = {}
 
-    async def create(self, **request: Any) -> SimpleNamespace:
+    async def parse(self, **request: Any) -> SimpleNamespace:
         self.request = request
-        block = SimpleNamespace(type="text", text=self.text)
-        return SimpleNamespace(stop_reason=self.stop_reason, content=[block])
+        return SimpleNamespace(status=self.status, output_parsed=self.parsed)
 
 
-def claude(messages: FakeMessages) -> ClaudeWriter:
-    client = SimpleNamespace(beta=SimpleNamespace(messages=messages))
-    return ClaudeWriter(cast(Any, client))
+def openai_writer(responses: FakeResponses) -> OpenAIWriter:
+    return OpenAIWriter(cast(Any, SimpleNamespace(responses=responses)))
 
 
-async def test_claude_writes_structured_json_with_its_placeholders() -> None:
+async def test_openai_writes_structured_output_with_its_placeholders() -> None:
     article = good_draft(PERSON)
-    messages = FakeMessages("end_turn", article.model_dump_json())
+    responses = FakeResponses("completed", article)
 
-    written = await claude(messages).write(PERSON)
+    written = await openai_writer(responses).write(PERSON)
 
     assert written == article
-    request = messages.request
-    assert request["output_config"]["format"]["type"] == "json_schema"
-    assert "{name}" in request["system"]
-    assert "{city}" in request["system"]
-    assert request["messages"][0]["content"] == PERSON.prompt()
+    request = responses.request
+    assert request["text_format"] is ArticleDraft
+    assert "{name}" in request["instructions"]
+    assert "{city}" in request["instructions"]
+    assert request["input"] == PERSON.prompt()
 
 
-async def test_claude_gives_up_on_a_refusal() -> None:
-    messages = FakeMessages("refusal", json.dumps({}))
-
-    assert await claude(messages).write(PERSON) is None
+@pytest.mark.parametrize(("status", "parsed"), [("completed", None), ("incomplete", None)])
+async def test_openai_gives_up_on_a_refusal_or_a_cut_off_answer(
+    status: str, parsed: ArticleDraft | None
+) -> None:
+    assert await openai_writer(FakeResponses(status, parsed)).write(PERSON) is None

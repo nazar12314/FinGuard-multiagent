@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 from datagen.amlworld import AmlworldFormatError, canonical_bank_id
-from datagen.media_corpus import CORPUS, ClaudeWriter, briefs, read_corpus, write_corpus
+from datagen.media_corpus import CORPUS, OpenAIWriter, briefs, read_corpus, write_corpus
 from datagen.replay import ONE_DAY_PER_MINUTE, Booking, Pace, bookings, replay
 from datagen.world import WorldConfig, build_world, world_dir
 from finguard.core.settings import KafkaSettings
@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     commands.add_parser(
         "media",
-        help="write the fictional adverse-media corpus with Claude (once; the result is committed)",
+        help="write the fictional adverse-media corpus with an LLM (once; the result is committed)",
     )
     arguments = parser.parse_args(argv)
 
@@ -96,7 +96,7 @@ def _build(arguments: argparse.Namespace) -> None:
 
 
 def _media() -> None:
-    written = asyncio.run(write_corpus(ClaudeWriter()))
+    written = asyncio.run(write_corpus(OpenAIWriter()))
     total, done = len(briefs()), len(read_corpus())
     print(f"wrote {written} articles; the corpus has {done} of {total} at {CORPUS}")
     if done < total:
