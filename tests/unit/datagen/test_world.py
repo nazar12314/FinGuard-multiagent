@@ -68,9 +68,15 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "laundering_attempts": 1,
         "customers": 2,
         "laundering_linked_customers": 1,
-        "documents": manifest["counts"]["documents"],
+        "documents": 0,
         "media_articles": manifest["counts"]["media_articles"],
     }
+    assert set(manifest["amlworld_sha256"]) == {
+        "HI-Small_Trans.csv",
+        "HI-Small_Patterns.txt",
+        "HI-Small_accounts.csv",
+    }
+    assert set(manifest["adverse_media_sha256"]) == {"adverse_media.jsonl"}
 
 
 def test_the_config_hash_changes_with_the_config(tmp_path: Path, raw_dir: Path) -> None:
@@ -83,6 +89,19 @@ def test_the_config_hash_changes_with_the_config(tmp_path: Path, raw_dir: Path) 
     assert config_hash(WorldConfig(seed=7, documents=False)) == first
     assert config_hash(WorldConfig(seed=8, documents=False)) != first
     assert config_hash(WorldConfig(seed=7, our_bank="001", documents=False)) != first
+    assert config_hash(WorldConfig(seed=7, our_bank="012", documents=False)) == first
+
+
+def test_the_raw_files_are_part_of_the_config_hash(tmp_path: Path, raw_dir: Path) -> None:
+    def config_hash() -> str:
+        world = build_world(WorldConfig(seed=7, documents=False), raw_dir, tmp_path / "worlds")
+        return str(json.loads((world / "manifest.json").read_text())["config_hash"])
+
+    first = config_hash()
+    patterns = raw_dir / "amlworld" / "HI-Small_Patterns.txt"
+    patterns.write_text(patterns.read_text() + "\n")
+
+    assert config_hash() != first
 
 
 def test_rebuilding_replaces_the_previous_world(tmp_path: Path, raw_dir: Path) -> None:
@@ -93,6 +112,7 @@ def test_rebuilding_replaces_the_previous_world(tmp_path: Path, raw_dir: Path) -
 
     assert not (world / "left_over.parquet").exists()
     assert (world / "transactions.parquet").exists()
+    assert sorted(path.name for path in (tmp_path / "worlds").iterdir()) == ["seed-7"]
 
 
 def test_a_failed_build_keeps_the_previous_world(tmp_path: Path, raw_dir: Path) -> None:

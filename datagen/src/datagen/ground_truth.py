@@ -101,8 +101,7 @@ def build_ground_truth(
     if unmatched := matched.filter(pl.col("transaction_id").is_null()).height:
         raise AmlworldFormatError(
             f"{unmatched} pattern-file transactions of bank {canonical_bank_id(our_bank)} match "
-            "no laundering row "
-            "in the CSV"
+            "no laundering row in the CSV"
         )
     if matched.get_column("transaction_id").is_duplicated().any():
         raise AmlworldFormatError("a transaction belongs to more than one laundering attempt")

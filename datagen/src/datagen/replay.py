@@ -11,6 +11,7 @@ import polars as pl
 from finguard.infrastructure.kafka.publisher import OutgoingMessage
 from finguard.modules.ingestion.messages import (
     TRANSACTION_BOOKED,
+    TRANSACTION_BOOKED_CONTRACT,
     AccountReference,
     Money,
     TransactionBooked,
@@ -43,10 +44,8 @@ def bookings(world: Path, limit: int | None = None) -> Iterator[Booking]:
     if not (world / "transactions.parquet").is_file():
         raise FileNotFoundError(f"{world} has no transactions; run `finguard-datagen build` first")
     transactions = pl.scan_parquet(world / "transactions.parquet")
-    if limit is not None:
-        transactions = transactions.head(limit)
     accounts = pl.scan_parquet(world / "accounts.parquet")
-    rows = (
+    ordered = (
         transactions.join(
             accounts.select(
                 from_account_id="account_id",
@@ -65,8 +64,8 @@ def bookings(world: Path, limit: int | None = None) -> Iterator[Booking]:
             on="to_account_id",
         )
         .sort("booked_at", "transaction_id")
-        .collect()
     )
+    rows = (ordered if limit is None else ordered.head(limit)).collect()
     return (_booking(row) for row in rows.iter_rows(named=True))
 
 
@@ -84,9 +83,15 @@ def _booking(row: dict[str, Any]) -> Booking:
         amount_received=Money(amount=row["amount_received"], currency=row["receiving_currency"]),
         payment_format=row["payment_format"],
     )
-    envelope = Envelope.new(TRANSACTION_BOOKED, booked.model_dump(mode="json"))
-    # Keyed by our customer's account, so each customer's transactions stay in order.
-    key = row["from_account_id"] if row["from_ours"] else row["to_account_id"]
+    envelope = Envelope.new(
+        TRANSACTION_BOOKED,
+        booked.model_dump(mode="json"),
+        version=TRANSACTION_BOOKED_CONTRACT.version,
+    )
+    # Keyed by our customer's account, so the transactions it sends, and those it receives from
+    # other banks, stay in order. A transfer between two of our accounts is keyed by the sender
+    # only, so it isn't ordered with the receiver's other transactions.
+    key = (booked.from_account if row["from_ours"] else booked.to_account).account_id
     message = OutgoingMessage(topic=TX_RAW.name, key=key, value=envelope.model_dump_json().encode())
     return Booking(booked_at=row["booked_at"], message=message)
 

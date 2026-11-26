@@ -25,6 +25,7 @@
       "additionalProperties": false,
       "properties": {
         "amount": {
+          "pattern": "^(?!0+(\\.0+)?$)\\d+(\\.\\d+)?$",
           "title": "Amount",
           "type": "string"
         },
@@ -43,7 +44,7 @@
     },
     "TransactionBooked": {
       "additionalProperties": false,
-      "description": "A transaction our bank is party to, as the core banking system booked it.\n\nAmounts are in their original currencies; ingestion converts them to EUR.",
+      "description": "A transaction our bank is party to, as the core banking system booked it.\n\nAmounts are in their original currencies; ingestion converts them to EUR. The core system\nre-sends a booking with the same transaction_id, so that id, not the envelope's, is what\nmakes a booking unique.",
       "properties": {
         "amount_paid": {
           "$ref": "#/$defs/Money"

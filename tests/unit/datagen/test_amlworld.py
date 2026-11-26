@@ -82,6 +82,9 @@ def test_rejects_a_bank_id_that_isnt_a_number(tmp_path: Path) -> None:
         ("100.00", "Yen", "JPY", "0.70"),
         ("0.000001", "Bitcoin", "BTC", "0.02"),
         ("2.50", "UK Pound", "GBP", "2.88"),
+        # Ties round half to even; ingestion's conversion in M2 must agree.
+        ("2.345", "Euro", "EUR", "2.34"),
+        ("2.355", "Euro", "EUR", "2.36"),
     ],
 )
 def test_converts_amounts_to_eur_and_keeps_the_originals(

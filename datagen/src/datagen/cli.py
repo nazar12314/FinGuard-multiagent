@@ -6,13 +6,17 @@ import sys
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
-from datagen.amlworld import AmlworldFormatError, canonical_bank_id
+from datagen.amlworld import AmlworldFormatError
 from datagen.media_corpus import CORPUS, OpenAIWriter, briefs, read_corpus, write_corpus
 from datagen.quality import DataQualityError
 from datagen.replay import ONE_DAY_PER_MINUTE, Booking, Pace, bookings, replay
 from datagen.world import WorldConfig, build_world, world_dir
 from finguard.core.settings import KafkaSettings
-from finguard.infrastructure.kafka.publisher import KafkaPublisher, create_kafka_producer
+from finguard.infrastructure.kafka.publisher import (
+    KafkaPublisher,
+    MessageRejected,
+    create_kafka_producer,
+)
 
 PROGRESS_EVERY = 5000
 
@@ -77,7 +81,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 _replay(arguments)
             case "media":
                 _media()
-    except (FileNotFoundError, AmlworldFormatError, DataQualityError) as error:
+    except (FileNotFoundError, AmlworldFormatError, DataQualityError, MessageRejected) as error:
         sys.exit(f"finguard-datagen: {error}")
 
 
@@ -85,7 +89,7 @@ def _build(arguments: argparse.Namespace) -> None:
     config = WorldConfig(
         seed=arguments.seed,
         amlworld_variant=arguments.variant,
-        our_bank=canonical_bank_id(arguments.our_bank),
+        our_bank=arguments.our_bank,
         document_sample=arguments.document_sample,
         documents=arguments.documents,
     )

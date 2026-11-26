@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import polars as pl
 import pytest
 from tests.amlworld_files import OUR_BANK, build_small_world, csv_row
 
@@ -135,3 +136,28 @@ async def test_the_cap_doesnt_delay_messages_already_spread_out() -> None:
     sent = await run(Pace(speedup=60, max_messages_per_s=1), schedule)
 
     assert sent == [(0.0, "a"), (10.0, "b")]
+
+
+def test_a_limit_takes_the_earliest_bookings_whatever_the_file_order(tmp_path: Path) -> None:
+    world = build_small_world(
+        tmp_path,
+        [
+            csv_row(OUR_BANK, "C1", "002", "B1", timestamp="2022/09/01 00:10"),
+            csv_row(OUR_BANK, "C2", "002", "B2", timestamp="2022/09/01 00:20"),
+        ],
+    )
+    transactions = pl.read_parquet(world / "transactions.parquet")
+    transactions.reverse().write_parquet(world / "transactions.parquet")
+
+    [first] = bookings(world, limit=1)
+
+    assert first.booked_at == T0 + timedelta(minutes=10)
+
+
+def test_the_key_is_the_account_id_the_world_uses(tmp_path: Path) -> None:
+    world = build_small_world(tmp_path, [csv_row("001", "A1", OUR_BANK, "C2")])
+
+    [booking] = bookings(world)
+
+    accounts = pl.read_parquet(world / "accounts.parquet").filter("held_at_our_bank")
+    assert booking.message.key == accounts.get_column("account_id").item() == "12:C2"

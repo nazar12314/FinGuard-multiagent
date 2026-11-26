@@ -9,7 +9,7 @@ from typing import Any
 
 import polars as pl
 
-from datagen.amlworld import map_bank_slice, read_bank_rows, transactions_csv
+from datagen.amlworld import canonical_bank_id, map_bank_slice, read_bank_rows, transactions_csv
 from datagen.companies import Companies, generate_companies
 from datagen.contacts import generate_contacts, laundering_rings
 from datagen.customers import (
@@ -24,7 +24,7 @@ from datagen.documents.render import write_documents
 from datagen.fx import EUR_PER_UNIT
 from datagen.ground_truth import build_ground_truth, patterns_file, read_attempts
 from datagen.media import assign_media
-from datagen.media_corpus import read_corpus
+from datagen.media_corpus import CORPUS, read_corpus
 from datagen.near_matches import opensanctions_files, plant_near_matches, read_listed
 from datagen.quality import DataQualityError, quality_report, write_quality_report
 
@@ -37,6 +37,10 @@ class WorldConfig:
     # Benign customers who get a document pack, besides every laundering-linked one.
     document_sample: int = 300
     documents: bool = True
+
+    def __post_init__(self) -> None:
+        # "012" and "12" are one bank, and must give one config hash.
+        object.__setattr__(self, "our_bank", canonical_bank_id(self.our_bank))
 
 
 def world_dir(worlds_dir: Path, seed: int) -> Path:
@@ -146,7 +150,19 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
     ).sort("document_id")
     for name, frame in files.items():
         frame.write_parquet(staging / name)
-    manifest = world_manifest(config, files, opensanctions_files(opensanctions).values())
+    manifest = world_manifest(
+        config,
+        files,
+        {
+            "opensanctions": opensanctions_files(opensanctions).values(),
+            "amlworld": [
+                transactions_csv(amlworld, variant),
+                patterns_file(amlworld, variant),
+                accounts_csv(amlworld, variant),
+            ],
+            "adverse_media": [CORPUS] if CORPUS.is_file() else [],
+        },
+    )
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     report = quality_report(staging, files)
     write_quality_report(report, staging)
@@ -155,9 +171,14 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
             f"{len(failed)} data-quality checks failed; see {staging / 'quality_report.md'}"
         )
 
+    # Two renames, so an interrupted swap leaves either world whole, never a half-deleted one.
+    previous = worlds_dir / f".{target.name}.previous"
+    if previous.exists():
+        shutil.rmtree(previous)
     if target.exists():
-        shutil.rmtree(target)
+        target.rename(previous)
     staging.rename(target)
+    shutil.rmtree(previous, ignore_errors=True)
     return target
 
 
@@ -201,13 +222,17 @@ def _renamed_customers(
 
 
 def world_manifest(
-    config: WorldConfig, files: dict[str, pl.DataFrame], sources: Iterable[Path]
+    config: WorldConfig, files: dict[str, pl.DataFrame], sources: dict[str, Iterable[Path]]
 ) -> dict[str, Any]:
     inputs = {
         **asdict(config),
         "fx_eur_per_unit": {currency: str(rate) for currency, rate in EUR_PER_UNIT.items()},
-        # OpenSanctions publishes daily, so the world records which files it was built from.
-        "opensanctions_sha256": {path.name: _sha256(path) for path in sources},
+        # A world depends on these files' exact contents (transaction ids are CSV row numbers,
+        # and OpenSanctions publishes daily), so they're part of its config hash.
+        **{
+            f"{source}_sha256": {path.name: _sha256(path) for path in paths}
+            for source, paths in sources.items()
+        },
     }
     canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"))
     accounts = files["accounts.parquet"]
