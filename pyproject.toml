@@ -91,6 +91,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "ASYNC", "PT", "TID
 "tests/e2e/**" = ["TID251"]
 # The adverse-media corpus is written once, offline, before FinGuard's LlmGateway exists.
 "datagen/src/datagen/media_corpus.py" = ["TID251"]
+"tests/unit/datagen/test_media_corpus.py" = ["TID251"]
 
 [tool.mypy]
 strict = true

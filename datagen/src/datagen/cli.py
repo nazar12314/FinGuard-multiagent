@@ -7,7 +7,14 @@ from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 from datagen.amlworld import AmlworldFormatError
-from datagen.media_corpus import CORPUS, OpenAIWriter, briefs, read_corpus, write_corpus
+from datagen.media_corpus import (
+    CORPUS,
+    CorpusWriterError,
+    OpenAIWriter,
+    briefs,
+    read_corpus,
+    write_corpus,
+)
 from datagen.quality import DataQualityError
 from datagen.replay import ONE_DAY_PER_MINUTE, Booking, Pace, bookings, replay
 from datagen.world import WorldConfig, build_world, world_dir
@@ -81,7 +88,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                 _replay(arguments)
             case "media":
                 _media()
-    except (FileNotFoundError, AmlworldFormatError, DataQualityError, MessageRejected) as error:
+    except (
+        FileNotFoundError,
+        AmlworldFormatError,
+        DataQualityError,
+        MessageRejected,
+        CorpusWriterError,
+    ) as error:
         sys.exit(f"finguard-datagen: {error}")
 
 
@@ -96,8 +109,12 @@ def _build(arguments: argparse.Namespace) -> None:
     world = build_world(config, arguments.raw_dir, arguments.worlds_dir)
     counts = json.loads((world / "manifest.json").read_text())["counts"]
     print(f"built {world}: " + ", ".join(f"{name} {value}" for name, value in counts.items()))
-    if not read_corpus():
-        print(f"note: no adverse-media corpus at {CORPUS}; run `finguard-datagen media` once")
+    written, total = len(read_corpus()), len(briefs())
+    if written < total:
+        print(
+            f"note: the adverse-media corpus at {CORPUS} has {written} of {total} articles; "
+            "run `finguard-datagen media` to write the rest"
+        )
 
 
 def _media() -> None:

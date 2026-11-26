@@ -3,12 +3,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import httpx2
+import openai
 import pytest
 
 from datagen.media_corpus import (
     IRRELEVANT_NAMESAKE,
     ArticleDraft,
     Brief,
+    CorpusWriterError,
     OpenAIWriter,
     briefs,
     read_corpus,
@@ -49,7 +52,7 @@ def test_briefs_cover_every_label_with_unique_ids() -> None:
 
     assert Counter(b.label for b in all_briefs) == {
         "relevant_adverse": 160,
-        "irrelevant_namesake": 120,
+        "irrelevant_namesake": 216,
         "not_adverse": 120,
     }
     assert len({b.brief_id for b in all_briefs}) == len(all_briefs)
@@ -132,3 +135,16 @@ async def test_openai_gives_up_on_a_refusal_or_a_cut_off_answer(
     status: str, parsed: ArticleDraft | None
 ) -> None:
     assert await openai_writer(FakeResponses(status, parsed)).write(PERSON) is None
+
+
+class UnpaidResponses:
+    async def parse(self, **request: Any) -> SimpleNamespace:
+        response = httpx2.Response(429, request=httpx2.Request("POST", "https://api.invalid"))
+        raise openai.RateLimitError("no credits remaining", response=response, body=None)
+
+
+async def test_a_model_that_cant_be_used_stops_the_run() -> None:
+    writer = OpenAIWriter(cast(Any, SimpleNamespace(responses=UnpaidResponses())))
+
+    with pytest.raises(CorpusWriterError, match="no credits"):
+        await writer.write(PERSON)

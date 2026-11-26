@@ -24,7 +24,8 @@ IRRELEVANT_NAMESAKE = "irrelevant_namesake"
 NOT_ADVERSE = "not_adverse"
 
 # What each kind of article is about, by label. Relevant stories are financial crime that
-# fits the subject; namesake stories are crimes by someone else who shares the name.
+# fits the subject; namesake stories are crimes by someone else who shares the name, financial
+# ones included, so that only the namesake's age, city and occupation tell the two apart.
 STORIES = {
     RELEVANT_ADVERSE: [
         "has been charged over a VAT carousel fraud",
@@ -42,6 +43,10 @@ STORIES = {
         "has been charged over a road-rage assault",
         "has been accused of embezzling from an amateur football club",
         "has been sentenced for a string of burglaries",
+        "has been charged over a VAT carousel fraud",
+        "has been convicted of laundering money for a drug gang",
+        "has been arrested as part of an invoice-fraud ring",
+        "has been accused of hiding income in offshore accounts",
     ],
     NOT_ADVERSE: [
         "has won a regional business award",
@@ -52,7 +57,7 @@ STORIES = {
         "has raised money for a children's hospital",
     ],
 }
-# Per story and kind of subject: 160 relevant, 120 namesake and 120 harmless articles.
+# Per story and kind of subject: 160 relevant, 216 namesake and 120 harmless articles.
 ARTICLES_PER_STORY = {RELEVANT_ADVERSE: 10, IRRELEVANT_NAMESAKE: 24, NOT_ADVERSE: 10}
 
 # The placeholders an article may use, and those it must, by kind of subject.
@@ -97,6 +102,10 @@ class Brief:
             "Write an article about a small company in {industry} from {city} "
             f"that {self.story}."
         )
+
+
+class CorpusWriterError(Exception):
+    """The model can't be reached at all (no credits, a bad key), so retrying won't help."""
 
 
 class ArticleDraft(BaseModel):
@@ -158,15 +167,22 @@ class OpenAIWriter:
 
     async def write(self, brief: Brief) -> ArticleDraft | None:
         placeholders = ", ".join(f"{{{name}}}" for name in brief.placeholders)
-        response = await self._client.responses.parse(
-            model=MODEL,
-            # Short news pieces don't need deep reasoning.
-            reasoning={"effort": "low"},
-            max_output_tokens=4000,
-            instructions=SYSTEM.replace("{placeholders}", placeholders),
-            input=brief.prompt(),
-            text_format=ArticleDraft,
-        )
+        try:
+            response = await self._client.responses.parse(
+                model=MODEL,
+                # Short news pieces don't need deep reasoning.
+                reasoning={"effort": "low"},
+                max_output_tokens=4000,
+                instructions=SYSTEM.replace("{placeholders}", placeholders),
+                input=brief.prompt(),
+                text_format=ArticleDraft,
+            )
+        except (
+            openai.AuthenticationError,
+            openai.PermissionDeniedError,
+            openai.RateLimitError,
+        ) as error:
+            raise CorpusWriterError(f"{type(error).__name__}: {error}") from error
         # A refusal or a cut-off answer leaves nothing parsed.
         if response.status != "completed":
             return None
