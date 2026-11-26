@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -146,3 +149,29 @@ def test_command_builds_a_world(
 def test_command_exits_with_the_reason_when_input_is_missing(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="not found"):
         main(["build", "--seed", "7", "--raw-dir", str(tmp_path), "--worlds-dir", str(tmp_path)])
+
+
+def test_a_world_is_byte_identical_whatever_the_hash_seed(tmp_path: Path, raw_dir: Path) -> None:
+    program = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from datagen.world import WorldConfig, build_world\n"
+        "build_world(WorldConfig(seed=7, document_sample=2), Path(sys.argv[1]), Path(sys.argv[2]))"
+    )
+
+    def build(hash_seed: str) -> dict[str, bytes]:
+        worlds = tmp_path / hash_seed
+        environment = {**os.environ, "PYTHONHASHSEED": hash_seed}
+        command = [sys.executable, "-c", program, str(raw_dir), str(worlds)]
+        subprocess.run(command, env=environment, check=True, capture_output=True)
+        world = worlds / "seed-7"
+        return {
+            str(path.relative_to(world)): path.read_bytes()
+            for path in sorted(world.rglob("*"))
+            if path.is_file()
+        }
+
+    first = build("1")
+
+    assert any(name.endswith(".pdf") for name in first)
+    assert build("2") == first

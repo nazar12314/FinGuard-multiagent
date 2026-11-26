@@ -26,6 +26,7 @@ from datagen.ground_truth import build_ground_truth, patterns_file, read_attempt
 from datagen.media import assign_media
 from datagen.media_corpus import CORPUS, read_corpus
 from datagen.near_matches import opensanctions_files, plant_near_matches, read_listed
+from datagen.people import customers_of_people, laundering_linked_people
 from datagen.quality import DataQualityError, quality_report, write_quality_report
 
 
@@ -139,12 +140,16 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
             "injection": [
                 spec.injection["technique"] if spec.injection else None for spec in specs
             ],
+            "injection_goal": [
+                spec.injection["goal"] if spec.injection else None for spec in specs
+            ],
             "scanned": [spec.scan is not None for spec in specs],
         },
         schema={
             "document_id": pl.String,
             "anomalies": pl.List(pl.String),
             "injection": pl.String,
+            "injection_goal": pl.String,
             "scanned": pl.Boolean,
         },
     ).sort("document_id")
@@ -183,23 +188,13 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
 
 
 def laundering_people(customers: Customers, companies: Companies) -> set[str]:
-    """Sole traders, directors and direct owners of laundering-linked customers."""
-    linked = customers.labels.filter("laundering_linked").get_column("customer_id").implode()
-    company_ids = (
-        companies.companies.filter(pl.col("customer_id").is_in(linked))
-        .get_column("company_id")
-        .implode()
+    people = customers_of_people(
+        pl.concat([customers.persons, companies.persons]),
+        companies.companies,
+        companies.officers,
+        companies.shareholdings,
     )
-    sole_traders = customers.persons.filter(pl.col("customer_id").is_in(linked))
-    directors = companies.officers.filter(pl.col("company_id").is_in(company_ids))
-    owners = companies.shareholdings.filter(
-        pl.col("company_id").is_in(company_ids) & (pl.col("holder_type") == "person")
-    )
-    return (
-        set(sole_traders.get_column("person_id"))
-        | set(directors.get_column("person_id"))
-        | set(owners.get_column("holder_id"))
-    )
+    return laundering_linked_people(people, customers.labels)
 
 
 def _renamed_customers(

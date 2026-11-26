@@ -8,6 +8,7 @@ import polars as pl
 
 from datagen.customers import FOREIGN_NATIONALITIES, locale_fakers
 from datagen.media_corpus import IRRELEVANT_NAMESAKE, NOT_ADVERSE, RELEVANT_ADVERSE
+from datagen.people import customers_of_people, laundering_linked_people
 
 # Adverse coverage clusters around laundering, but some honest customers get accused too,
 # namesakes' crimes land on anyone, and plenty of coverage is harmless.
@@ -61,8 +62,16 @@ def assign_media(
             if not pool or rng.random() >= rate:
                 continue
             template = rng.choice(pool)
-            published_on = activity_starts - timedelta(days=rng.randint(30, 3 * 365))
             values = {**subject.values}
+            # Coverage from the last three years, and never of a company before it existed.
+            earliest = max(
+                activity_starts - timedelta(days=3 * 365),
+                values.pop("incorporated_on", date.min),
+            )
+            latest = activity_starts - timedelta(days=30)
+            published_on = earliest + timedelta(
+                days=rng.randint(0, max(0, (latest - earliest).days))
+            )
             if "birth_date" in values:
                 values["age"] = (published_on - values.pop("birth_date")).days // 365
             if label == IRRELEVANT_NAMESAKE:
@@ -99,7 +108,9 @@ def assign_media(
 
 
 def _subjects(world: dict[str, pl.DataFrame]) -> list[_Subject]:
-    """Sole traders, the first director of each company customer, and the companies."""
+    """Sole traders, the officers of company customers, and the companies. A person is
+    laundering-linked if any customer they stand behind is; an officer of several companies
+    is written up with the first one's city and industry."""
     customers = {row["customer_id"]: row for row in world["customers.parquet"].rows(named=True)}
     linked = dict(
         world["ground_truth/customer_labels.parquet"]
@@ -130,6 +141,19 @@ def _subjects(world: dict[str, pl.DataFrame]) -> list[_Subject]:
         if customer_id and person_id not in people:
             people[person_id] = customer_id
 
+    linked_people = laundering_linked_people(
+        customers_of_people(
+            world["persons.parquet"],
+            world["companies.parquet"],
+            world["officers.parquet"],
+            world["shareholdings.parquet"],
+        ),
+        world["ground_truth/customer_labels.parquet"],
+    )
+    incorporated = dict(
+        world["companies.parquet"].select("customer_id", "incorporated_on").drop_nulls().iter_rows()
+    )
+
     subjects = []
     for person_id, customer_id in sorted(people.items()):
         customer = customers[customer_id]
@@ -138,7 +162,7 @@ def _subjects(world: dict[str, pl.DataFrame]) -> list[_Subject]:
             _Subject(
                 "person",
                 person_id,
-                linked[customer_id],
+                person_id in linked_people,
                 {
                     "name": persons[person_id]["full_name_latin"],
                     "city": city[(customer_id, role)],
@@ -158,6 +182,7 @@ def _subjects(world: dict[str, pl.DataFrame]) -> list[_Subject]:
                         "company": customer["name"],
                         "city": city[(customer_id, "registered")],
                         "industry": customer["industry"],
+                        "incorporated_on": incorporated[customer_id],
                     },
                 )
             )

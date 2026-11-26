@@ -112,6 +112,7 @@ FOREIGN_NATIONALITIES = [("UA", "uk_UA", 0.5), ("GB", "en_GB", 0.2), ("IT", "it_
 FOREIGN_NATIONAL_SHARE = 0.25
 
 EARLIEST_ONBOARDING = date(2015, 1, 1)
+ADULT_AGE_DAYS = 18 * 366
 RECENT_ONBOARDING_DAYS = 90
 
 
@@ -344,17 +345,18 @@ def locale_fakers(seed: int, stream: str) -> dict[str, Faker]:
     locales = {country.locale for country in COUNTRIES} | {
         locale for _, locale, _ in FOREIGN_NATIONALITIES
     }
-    fakers = {}
-    for locale in sorted(locales):
-        faker = Faker(locale)
-        faker.seed_instance(f"{seed}:{stream}:{locale}")
-        if locale == "it_IT":
-            # Faker builds the Italian city list from a set, so its order, and every city()
-            # drawn from it, changes with Python's hash seed.
-            address = next(p for p in faker.get_providers() if hasattr(p, "cities"))
-            address.cities = sorted(address.cities)
-        fakers[locale] = faker
-    return fakers
+    return {locale: seeded_faker(locale, f"{seed}:{stream}:{locale}") for locale in sorted(locales)}
+
+
+def seeded_faker(locale: str, seed: str) -> Faker:
+    faker = Faker(locale)
+    faker.seed_instance(seed)
+    if locale == "it_IT":
+        # Faker builds the Italian city list from a set, so its order, and every city() drawn
+        # from it, changes with Python's hash seed.
+        address = next(p for p in faker.get_providers() if hasattr(p, "cities"))
+        address.cities = sorted(address.cities)
+    return faker
 
 
 def generate_person(
@@ -372,7 +374,9 @@ def generate_person(
     faker = fakers[locale]
     first_name = faker.first_name_female() if rng.random() < 0.5 else faker.first_name_male()
     full_name = f"{first_name} {faker.last_name()}"
-    age_days = rng.randint(21 * 365, 70 * 365)
+    # Everyone is an adult by the earliest onboarding, so at any onboarding or appointment.
+    youngest = max(21 * 365, (activity_starts - EARLIEST_ONBOARDING).days + ADULT_AGE_DAYS)
+    age_days = rng.randint(youngest, 70 * 365)
     return {
         "person_id": person_id,
         "full_name": full_name,

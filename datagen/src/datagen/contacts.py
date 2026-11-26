@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import polars as pl
 from faker import Faker
 
-from datagen.customers import COUNTRIES
+from datagen.customers import COUNTRIES, seeded_faker
 
 # How often a laundering ring that spans several of our customers gives itself away by sharing a
 # device or a registered address.
@@ -165,10 +165,16 @@ class _Builder:
             for member in members:
                 self.link_device(member, device)
         if self.rng.random() < RING_SHARES_ADDRESS:
-            address = self.new_address(str(members[0]["country"]))
-            self._label("address", address, "ring")
-            for member in members:
-                self.link_address(str(member["customer_id"]), address, "registered")
+            # A registered address is in the company's own country, so only members registered
+            # in the same country can share one.
+            for country in COUNTRIES:
+                local = [m for m in members if m["country"] == country.code]
+                if len(local) < 2:
+                    continue
+                address = self.new_address(country.code)
+                self._label("address", address, "ring")
+                for member in local:
+                    self.link_address(str(member["customer_id"]), address, "registered")
 
     def contacts(self) -> Contacts:
         used_addresses = set(self.customer_addresses.values())
@@ -220,9 +226,7 @@ class _Builder:
     def _faker(self, country: str) -> Faker:
         if country not in self.fakers:
             [locale] = [c.locale for c in COUNTRIES if c.code == country]
-            faker = Faker(locale)
-            faker.seed_instance(f"{self.seed}:contacts:{country}")
-            self.fakers[country] = faker
+            self.fakers[country] = seeded_faker(locale, f"{self.seed}:contacts:{country}")
         return self.fakers[country]
 
 

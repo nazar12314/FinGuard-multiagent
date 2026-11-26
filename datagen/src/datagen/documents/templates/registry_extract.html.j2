@@ -19,8 +19,8 @@
 </table>
 <h2>Shareholders</h2>
 <table>
-  <thead><tr><th>Holder</th><th>Type</th><th class="amount">Share %</th></tr></thead>
-  <tbody>{% for s in shareholders %}<tr><td>{{ s.holder }}</td><td>{{ s.type }}</td><td class="amount">{{ s.share_percent }}</td></tr>{% endfor %}</tbody>
+  <thead><tr><th>Holder</th><th>Type</th><th>Country</th><th class="amount">Share %</th></tr></thead>
+  <tbody>{% for s in shareholders %}<tr><td>{{ s.holder }}</td><td>{{ s.type }}</td><td>{{ s.country }}</td><td class="amount">{{ s.share_percent }}</td></tr>{% endfor %}</tbody>
 </table>
 <svg width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="stamp" style="margin-top: 16pt">
   <circle cx="48" cy="48" r="44" fill="none" stroke="#8e1b1b" stroke-width="3"/>

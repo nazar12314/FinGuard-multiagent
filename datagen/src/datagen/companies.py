@@ -7,6 +7,7 @@ import polars as pl
 from faker import Faker
 
 from datagen.customers import (
+    ADULT_AGE_DAYS,
     COUNTRIES,
     PERSON_SCHEMA,
     Country,
@@ -108,6 +109,8 @@ class _Builder:
     persons: list[dict[str, object]] = field(default_factory=list)
     labels: list[dict[str, object]] = field(default_factory=list)
     holding_companies: int = 0
+    incorporated_on: dict[str, date] = field(default_factory=dict)
+    birth_dates: dict[str, date] = field(default_factory=dict)
 
     def add_customer_company(self, customer: dict[str, object], laundering_linked: bool) -> None:
         flags: tuple[str, ...] = ()
@@ -168,6 +171,10 @@ class _Builder:
         person_id = f"per-o{len(self.persons) + 1:06d}"
         person = generate_person(self.rng, self.fakers, person_id, residence, self.activity_starts)
         self.persons.append({**person, "customer_id": None})
+        birth_date = person["birth_date"]
+        if not isinstance(birth_date, date):
+            raise TypeError(f"{person_id} has no birth date")
+        self.birth_dates[person_id] = birth_date
         return person_id
 
     def _close_a_loop(self, company_id: str, stake: int, country: Country, before: date) -> None:
@@ -208,6 +215,8 @@ class _Builder:
     ) -> None:
         offshore = next((j for j in OFFSHORE if j.code == country), None)
         registration = offshore.registration_format if offshore else REGISTRATION_FORMATS[country]
+        incorporated_on = incorporated_before - timedelta(days=self.rng.randint(30, 15 * 365))
+        self.incorporated_on[company_id] = incorporated_on
         self.companies.append(
             {
                 "company_id": company_id,
@@ -216,8 +225,7 @@ class _Builder:
                 "legal_form": legal_form,
                 "country": country,
                 "registration_number": registration.format(self.rng.randint(1, 999_999)),
-                "incorporated_on": incorporated_before
-                - timedelta(days=self.rng.randint(30, 15 * 365)),
+                "incorporated_on": incorporated_on,
             }
         )
 
@@ -235,12 +243,16 @@ class _Builder:
             )
 
     def _appoint(self, company_id: str, person_id: str, role: str, before: date) -> None:
+        # After the company exists and the director is an adult, and before it joined us.
+        adult_on = self.birth_dates[person_id] + timedelta(days=ADULT_AGE_DAYS)
+        earliest = max(self.incorporated_on[company_id], adult_on)
         self.officers.append(
             {
                 "company_id": company_id,
                 "person_id": person_id,
                 "role": role,
-                "appointed_on": before - timedelta(days=self.rng.randint(0, 5 * 365)),
+                "appointed_on": earliest
+                + timedelta(days=self.rng.randint(0, (before - earliest).days)),
             }
         )
 

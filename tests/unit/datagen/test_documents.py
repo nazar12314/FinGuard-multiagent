@@ -4,9 +4,18 @@ from pathlib import Path
 import polars as pl
 import pypdfium2 as pdfium
 import pytest
+from markupsafe import escape
 from tests.amlworld_files import OUR_BANK, csv_row, write_raw_files
 
-from datagen.documents.content import DocumentSpec, document_specs, sample_customers
+from datagen.documents.content import (
+    ANOMALY_WHEN_BENIGN,
+    ANOMALY_WHEN_LAUNDERING,
+    ANOMALY_WHEN_LOOK_ALIKE,
+    DocumentSpec,
+    _Lookups,
+    document_specs,
+    sample_customers,
+)
 from datagen.documents.render import render_html, scan_pdf
 from datagen.world import WorldConfig, build_world
 
@@ -140,24 +149,63 @@ def test_injections_are_labelled_and_land_in_the_html(world: Path) -> None:
     for spec in injected:
         assert spec.injection is not None
         html = render_html(spec)
-        assert spec.injection["payload"] in html
+        payload = str(escape(spec.injection["payload"]))
+        assert payload in html
         if spec.injection["technique"] == "metadata":
-            assert f'<meta name="description" content="{spec.injection["payload"]}">' in html
+            assert f'<meta name="description" content="{payload}">' in html
 
 
-def test_white_text_injections_are_never_scanned(world: Path) -> None:
+def test_only_visible_injections_are_ever_scanned(world: Path) -> None:
     specs = all_specs(world)
 
     assert any(spec.scan for spec in specs)
     assert not any(
-        spec.scan and spec.injection and spec.injection["technique"] == "hidden_text"
+        spec.scan and spec.injection and spec.injection["technique"] != "visible_note"
         for spec in specs
     )
 
 
+def test_what_gets_injected_doesnt_depend_on_the_label(world: Path) -> None:
+    loaded = frames(world)
+    customers = loaded["customers.parquet"].get_column("customer_id").to_list()
+    flipped = {
+        **loaded,
+        "ground_truth/customer_labels.parquet": loaded[
+            "ground_truth/customer_labels.parquet"
+        ].with_columns(laundering_linked=~pl.col("laundering_linked")),
+    }
+
+    def injections(world_frames: dict[str, pl.DataFrame]) -> dict[str, object]:
+        specs = document_specs(world_frames, customers, seed=3)
+        return {spec.document_id: spec.injection for spec in specs}
+
+    assert injections(flipped) == injections(loaded)
+
+
+def test_look_alikes_have_messy_paperwork_too(world: Path) -> None:
+    loaded = frames(world)
+    labels = loaded["ground_truth/customer_labels.parquet"]
+    linked = labels.filter("laundering_linked").get_column("customer_id")[0]
+    benign = labels.filter(~pl.col("laundering_linked")).get_column("customer_id")
+    look_alike, plain = benign[0], benign[1]
+    loaded["ground_truth/customer_labels.parquet"] = labels.with_columns(
+        profile=pl.when(pl.col("customer_id") == look_alike)
+        .then(pl.lit("hard_negative"))
+        .otherwise("profile")
+    )
+
+    lookups = _Lookups(loaded)
+
+    assert lookups.anomaly_rate(linked) == ANOMALY_WHEN_LAUNDERING
+    assert lookups.anomaly_rate(look_alike) == ANOMALY_WHEN_LOOK_ALIKE
+    assert lookups.anomaly_rate(plain) == ANOMALY_WHEN_BENIGN
+
+
 def test_a_scanned_pdf_keeps_its_pages_but_loses_its_text(world: Path, tmp_path: Path) -> None:
-    index = pl.read_parquet(world / "documents.parquet")
-    digital = world / index.get_column("path")[0]
+    index = pl.read_parquet(world / "documents.parquet").join(
+        pl.read_parquet(world / "ground_truth" / "document_labels.parquet"), on="document_id"
+    )
+    digital = world / index.filter(~pl.col("scanned")).get_column("path")[0]
     copy = tmp_path / digital.name
     copy.write_bytes(digital.read_bytes())
 

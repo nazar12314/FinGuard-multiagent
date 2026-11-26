@@ -86,3 +86,20 @@ def test_is_deterministic_for_a_seed() -> None:
     assert first.addresses.equals(again.addresses)
     assert first.customer_devices.equals(again.customer_devices)
     assert first.labels.equals(again.labels)
+
+
+def test_a_ring_shares_a_registered_address_only_within_one_country() -> None:
+    # Customers 0, 3, 6... are Polish and the rest German, so each ring spans both countries.
+    rings = [[f"cus-{n:04d}", f"cus-{n + 1:04d}", f"cus-{n + 2:04d}"] for n in range(0, 600, 3)]
+    contacts = generate_contacts(customers(600), rings, seed=3)
+
+    registered = (
+        contacts.customer_addresses.filter(pl.col("role") == "registered")
+        .join(contacts.addresses.select("address_id", address_country="country"), on="address_id")
+        .join(customers(600).select("customer_id", "country"), on="customer_id")
+    )
+    ring_addresses = contacts.labels.filter(
+        (pl.col("attribute") == "address") & (pl.col("reason") == "ring")
+    )
+    assert ring_addresses.height > 0
+    assert (registered.get_column("address_country") == registered.get_column("country")).all()

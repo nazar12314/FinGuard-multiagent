@@ -16,6 +16,7 @@ WORLD_FILES = [
     "customer_addresses",
     "companies",
     "officers",
+    "shareholdings",
     "ground_truth/customer_labels",
 ]
 
@@ -44,11 +45,15 @@ def corpus() -> list[dict[str, str]]:
 
 
 @pytest.fixture(scope="module")
-def media(tmp_path_factory: pytest.TempPathFactory) -> Media:
+def frames(tmp_path_factory: pytest.TempPathFactory) -> dict[str, pl.DataFrame]:
     directory = tmp_path_factory.mktemp("world")
     rows = [csv_row(OUR_BANK, f"C{n}", "002", f"B{n}", laundering=n < 60) for n in range(400)]
     world = build_small_world(directory, rows)
-    frames = {f"{name}.parquet": pl.read_parquet(world / f"{name}.parquet") for name in WORLD_FILES}
+    return {f"{name}.parquet": pl.read_parquet(world / f"{name}.parquet") for name in WORLD_FILES}
+
+
+@pytest.fixture(scope="module")
+def media(frames: dict[str, pl.DataFrame]) -> Media:
     return assign_media(frames, corpus(), ACTIVITY_STARTS, seed=4)
 
 
@@ -57,12 +62,39 @@ def test_fills_every_placeholder(media: Media) -> None:
         assert "{" not in headline + body
 
 
-def test_relevant_coverage_clusters_around_laundering(media: Media) -> None:
-    relevant = media.labels.filter(pl.col("label") == "relevant_adverse")
+def test_relevant_coverage_clusters_around_laundering(
+    media: Media, frames: dict[str, pl.DataFrame]
+) -> None:
+    labels = frames["ground_truth/customer_labels.parquet"]
+    relevant = set(
+        media.labels.filter(
+            (pl.col("label") == "relevant_adverse") & (pl.col("subject_type") == "company")
+        ).get_column("subject_id")
+    )
 
-    assert relevant.height > 0
+    def covered(linked: bool) -> float:
+        customers = labels.filter(pl.col("laundering_linked") == linked).get_column("customer_id")
+        return len(relevant & set(customers)) / customers.len()
+
+    assert covered(True) == pytest.approx(0.25, abs=0.12)
+    assert covered(False) < 0.04
     assert media.labels.filter(pl.col("label") == "irrelevant_namesake").height > 0
     assert media.labels.filter(pl.col("label") == "not_adverse").height > 0
+
+
+def test_no_company_is_written_about_before_it_was_incorporated(
+    media: Media, frames: dict[str, pl.DataFrame]
+) -> None:
+    about_companies = (
+        media.labels.filter(pl.col("subject_type") == "company")
+        .join(media.articles, on="article_id")
+        .join(frames["companies.parquet"], left_on="subject_id", right_on="customer_id")
+    )
+
+    assert about_companies.height > 0
+    assert (
+        about_companies.get_column("published_on") >= about_companies.get_column("incorporated_on")
+    ).all()
 
 
 def test_articles_are_marked_fictional_and_dated_before_the_activity(media: Media) -> None:
