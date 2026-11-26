@@ -745,7 +745,7 @@ version = "0.1.0"
 source = { editable = "datagen" }
 dependencies = [
     { name = "faker" },
-    { name = "finguard" },
+    { name = "finguard", extra = ["screening"] },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "openai" },
@@ -757,7 +757,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "faker", specifier = ">=40.63.0" },
-    { name = "finguard", editable = "." },
+    { name = "finguard", extras = ["screening"], editable = "." },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "numpy", specifier = ">=2.5.5" },
     { name = "openai", specifier = ">=3.60.0" },

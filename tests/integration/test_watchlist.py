@@ -1,7 +1,9 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import asyncpg
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
@@ -13,7 +15,12 @@ from finguard.core.settings import DatabaseSettings, Settings
 from finguard.entrypoints.watchlist_import import import_watchlist
 from finguard.modules.screening.adapters.postgres import PostgresWatchlist
 from finguard.modules.screening.adapters.tables import watchlist_entities, watchlist_names
-from finguard.modules.screening.domain.watchlist import WatchlistEntity, WatchlistName, name_forms
+from finguard.modules.screening.domain.watchlist import (
+    NameForms,
+    WatchlistEntity,
+    WatchlistName,
+    name_forms,
+)
 from finguard.modules.screening.ports import WatchlistRepository
 
 SessionFactory = async_sessionmaker[AsyncSession]
@@ -24,6 +31,34 @@ class Subject:
     repository: WatchlistRepository
     entity_ids: Callable[[], Awaitable[set[str]]]
     names_of: Callable[[str], Awaitable[set[str]]]
+    rows: Callable[[], Awaitable[tuple[set[tuple[Any, ...]], set[tuple[Any, ...]]]]]
+
+
+def entity_row(e: WatchlistEntity) -> tuple[Any, ...]:
+    return (
+        e.entity_id,
+        e.schema,
+        e.name,
+        e.birth_dates,
+        e.countries,
+        e.program_ids,
+        e.datasets,
+        e.sanctioned,
+        e.pep,
+    )
+
+
+def name_tuple(n: WatchlistName) -> tuple[Any, ...]:
+    forms = n.forms
+    return (
+        n.entity_id,
+        n.name,
+        n.latin,
+        forms.normalised,
+        forms.token_sorted,
+        forms.phonetic,
+        n.is_alias,
+    )
 
 
 def name_row(entity: WatchlistEntity, latin: str) -> WatchlistName:
@@ -44,7 +79,13 @@ async def subject(
         async def fake_names(entity_id: str) -> set[str]:
             return {n.forms.normalised for n in fake.names if n.entity_id == entity_id}
 
-        yield Subject(fake, fake_ids, fake_names)
+        async def fake_rows() -> tuple[set[tuple[Any, ...]], set[tuple[Any, ...]]]:
+            return (
+                {entity_row(e) for e in fake.entities.values()},
+                {name_tuple(n) for n in fake.names},
+            )
+
+        yield Subject(fake, fake_ids, fake_names, fake_rows)
         return
 
     async def ids() -> set[str]:
@@ -58,7 +99,56 @@ async def subject(
             )
             return set(await session.scalars(query))
 
-    yield Subject(PostgresWatchlist(session_factory), ids, names)
+    async def rows() -> tuple[set[tuple[Any, ...]], set[tuple[Any, ...]]]:
+        async with session_factory() as session:
+            entities = (await session.execute(select(watchlist_entities))).all()
+            names = (await session.execute(select(*NAME_COLUMNS))).all()
+        return (
+            {tuple(tuple(v) if isinstance(v, list) else v for v in row) for row in entities},
+            {tuple(row) for row in names},
+        )
+
+    yield Subject(PostgresWatchlist(session_factory), ids, names, rows)
+
+
+NAME_COLUMNS = [column for column in watchlist_names.columns if column.name != "id"]
+
+
+async def test_every_field_survives_the_round_trip(subject: Subject) -> None:
+    listed = WatchlistEntity(
+        entity_id="NK-9",
+        schema="Person",
+        name="Petr Ivanov",
+        aliases=(),
+        birth_dates=("1965-03-02", "1965"),
+        countries=("ru", "by"),
+        program_ids=("EU-RUS",),
+        datasets=("EU Sanctions", "UN"),
+        sanctioned=True,
+        pep=False,
+    )
+    # Every form differs, so two columns swapped in the adapter can't go unnoticed.
+    name = WatchlistName(
+        "NK-9", "Пётр Иванов", "Petr Ivanov", NameForms("a", "b", "c"), is_alias=True
+    )
+
+    async with subject.repository.replace() as writer:
+        await writer.add([listed], [name])
+
+    assert await subject.rows() == ({entity_row(listed)}, {name_tuple(name)})
+
+
+async def test_a_duplicate_entity_or_a_name_without_one_fails_the_replace(
+    subject: Subject,
+) -> None:
+    async def add(entities: list[WatchlistEntity], names: list[WatchlistName]) -> None:
+        async with subject.repository.replace() as writer:
+            await writer.add(entities, names)
+
+    with pytest.raises((ValueError, asyncpg.PostgresError)):
+        await add([PERSON, PERSON], [])
+    with pytest.raises((ValueError, asyncpg.PostgresError)):
+        await add([], [name_row(entity("NK-404", "Nobody"), "Nobody")])
 
 
 async def test_replacing_loads_what_was_added(subject: Subject) -> None:

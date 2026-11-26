@@ -33,7 +33,7 @@ def test_reads_both_collections_and_flags_where_each_entity_is_listed(tmp_path: 
             target(
                 "NK-1",
                 "Petr Ivanov",
-                aliases="Ivanov Petr;Pyotr Ivanov",
+                aliases="Ivanov Petr; Pyotr Ivanov",
                 birth_date="1965-03-02;1965",
                 countries="ru",
                 program_ids="EU-RUS",

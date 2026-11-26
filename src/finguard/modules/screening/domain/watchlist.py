@@ -9,6 +9,9 @@ import jellyfish
 SCREENED_SCHEMAS = frozenset({"Person", "Organization", "Company", "LegalEntity"})
 
 _NOT_ALPHANUMERIC = re.compile(r"[^0-9a-z]+")
+# Marks that sit inside a word: apostrophes (O'Brien), the soft and hard signs of Cyrillic
+# romanisations (Ignat'yev, Ignat"ev) and BGN's separating dot (Mostsov written Mosts·ov).
+_INSIDE_A_WORD = re.compile("['\"`\u00b4\u00b7\u02b9\u02ba\u02bb\u02bc\u02be\u02bf\u2018\u2019]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +53,13 @@ def name_forms(latin: str) -> NameForms:
     """Forms of a name already written in Latin letters: casefolded, accents and punctuation
     removed; its tokens sorted, so "Ivanov Petr" meets "Petr Ivanov"; and a phonetic key per
     token, so "Mohammed" meets "Muhamad"."""
-    decomposed = unicodedata.normalize("NFKD", latin)
+    decomposed = unicodedata.normalize("NFKD", _INSIDE_A_WORD.sub("", latin))
     unaccented = "".join(char for char in decomposed if not unicodedata.combining(char))
     normalised = _NOT_ALPHANUMERIC.sub(" ", unaccented.casefold()).strip()
     tokens = normalised.split()
     return NameForms(
         normalised=normalised,
         token_sorted=" ".join(sorted(tokens)),
-        phonetic=" ".join(jellyfish.metaphone(token) for token in tokens),
+        # Metaphone gives nothing for some tokens (digits, "II"); they'd leave empty slots.
+        phonetic=" ".join(key for token in tokens if (key := jellyfish.metaphone(token))),
     )

@@ -1,6 +1,6 @@
 import pytest
 
-from datagen.transliteration import romanize_ukrainian
+from finguard.modules.screening.domain.romanisation import romanize_ukrainian
 
 
 @pytest.mark.parametrize(

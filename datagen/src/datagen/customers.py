@@ -10,7 +10,7 @@ import polars as pl
 from faker import Faker
 
 from datagen.amlworld import AmlworldFormatError, account_id, bank_id
-from datagen.transliteration import romanize_ukrainian
+from finguard.modules.screening.domain.romanisation import romanize_ukrainian
 
 ACCOUNTS_HEADER = "Bank Name,Bank ID,Account Number,Entity ID,Entity Name"
 

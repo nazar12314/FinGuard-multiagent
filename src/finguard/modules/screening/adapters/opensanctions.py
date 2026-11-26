@@ -6,6 +6,8 @@ from pathlib import Path
 from finguard.modules.screening.domain.watchlist import SCREENED_SCHEMAS, WatchlistEntity
 from finguard.platform.errors import ValidationFailed
 
+# Each collection's targets.simple.csv, saved under its collection's name.
+COLLECTION_FILES = {"sanctions": "sanctions.targets.simple.csv", "peps": "peps.targets.simple.csv"}
 # Columns of OpenSanctions' targets.simple.csv that the watchlist keeps.
 REQUIRED_COLUMNS = frozenset(
     {"id", "schema", "name", "aliases", "birth_date", "countries", "program_ids", "dataset"}
@@ -50,7 +52,9 @@ def _read(path: Path, *, sanctioned: bool, pep: bool) -> Iterator[WatchlistEntit
 
 
 def _values(field: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(value for value in field.split(";") if value))
+    # Some fields separate their values with "; ".
+    values = (value.strip() for value in field.split(";"))
+    return tuple(dict.fromkeys(value for value in values if value))
 
 
 def _merge(listed: WatchlistEntity, pep: WatchlistEntity) -> WatchlistEntity:

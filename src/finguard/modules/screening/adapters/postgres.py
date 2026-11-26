@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -47,39 +47,42 @@ class _CopyWriter:
     async def add(
         self, entities: Sequence[WatchlistEntity], names: Sequence[WatchlistName]
     ) -> None:
+        await self._copy(watchlist_entities.name, ENTITY_COLUMNS, map(_entity_row, entities))
+        await self._copy(watchlist_names.name, NAME_COLUMNS, map(_name_row, names))
+
+    async def _copy(
+        self, table: str, columns: list[str], rows: Iterable[dict[str, object]]
+    ) -> None:
+        # Rows are dicts and records follow the table's columns, so the two can't drift apart.
         await self._connection.copy_records_to_table(
-            watchlist_entities.name,
+            table,
             schema_name=SCREENING_SCHEMA,
-            columns=ENTITY_COLUMNS,
-            records=[
-                (
-                    e.entity_id,
-                    e.schema,
-                    e.name,
-                    list(e.birth_dates),
-                    list(e.countries),
-                    list(e.program_ids),
-                    list(e.datasets),
-                    e.sanctioned,
-                    e.pep,
-                )
-                for e in entities
-            ],
+            columns=columns,
+            records=[tuple(row[column] for column in columns) for row in rows],
         )
-        await self._connection.copy_records_to_table(
-            watchlist_names.name,
-            schema_name=SCREENING_SCHEMA,
-            columns=NAME_COLUMNS,
-            records=[
-                (
-                    n.entity_id,
-                    n.name,
-                    n.latin,
-                    n.forms.normalised,
-                    n.forms.token_sorted,
-                    n.forms.phonetic,
-                    n.is_alias,
-                )
-                for n in names
-            ],
-        )
+
+
+def _entity_row(entity: WatchlistEntity) -> dict[str, object]:
+    return {
+        "entity_id": entity.entity_id,
+        "entity_schema": entity.schema,
+        "name": entity.name,
+        "birth_dates": list(entity.birth_dates),
+        "countries": list(entity.countries),
+        "program_ids": list(entity.program_ids),
+        "datasets": list(entity.datasets),
+        "sanctioned": entity.sanctioned,
+        "pep": entity.pep,
+    }
+
+
+def _name_row(name: WatchlistName) -> dict[str, object]:
+    return {
+        "entity_id": name.entity_id,
+        "name": name.name,
+        "latin": name.latin,
+        "normalised": name.forms.normalised,
+        "token_sorted": name.forms.token_sorted,
+        "phonetic": name.forms.phonetic,
+        "is_alias": name.is_alias,
+    }

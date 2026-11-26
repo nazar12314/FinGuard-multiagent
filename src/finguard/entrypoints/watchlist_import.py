@@ -7,7 +7,7 @@ from pathlib import Path
 from finguard.core.container import build_watchlist_import
 from finguard.core.logging import LogEvent, configure_logging, get_logger
 from finguard.core.settings import Settings, load_settings_or_exit
-from finguard.modules.screening.adapters.opensanctions import read_opensanctions
+from finguard.modules.screening.adapters.opensanctions import COLLECTION_FILES, read_opensanctions
 from finguard.modules.screening.service import WatchlistImported
 
 logger = get_logger(__name__)
@@ -25,9 +25,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Replace the screening watchlist with OpenSanctions' sanctions and PEP collections."""
     parser = argparse.ArgumentParser(prog="finguard-watchlist-import")
     parser.add_argument(
-        "--sanctions", type=Path, default=OPENSANCTIONS_DIR / "sanctions.targets.simple.csv"
+        "--sanctions", type=Path, default=OPENSANCTIONS_DIR / COLLECTION_FILES["sanctions"]
     )
-    parser.add_argument("--peps", type=Path, default=OPENSANCTIONS_DIR / "peps.targets.simple.csv")
+    parser.add_argument("--peps", type=Path, default=OPENSANCTIONS_DIR / COLLECTION_FILES["peps"])
     arguments = parser.parse_args(argv)
     for path in (arguments.sanctions, arguments.peps):
         if not path.is_file():

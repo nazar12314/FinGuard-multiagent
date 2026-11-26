@@ -71,4 +71,4 @@ def downgrade() -> None:
     op.drop_table("watchlist_names", schema="screening")
     op.drop_table("watchlist_entities", schema="screening")
     op.execute(sa.schema.DropSchema("screening"))
-    op.execute("DROP EXTENSION IF EXISTS pg_trgm")
+    # pg_trgm stays: it may have existed before, and other schemas may index with it.

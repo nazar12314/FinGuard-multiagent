@@ -102,7 +102,7 @@ explicit_package_bases = true
 
 # These libraries ship no type information.
 [[tool.mypy.overrides]]
-module = ["aiokafka", "aiokafka.*", "icu", "weasyprint", "pypdfium2"]
+module = ["aiokafka", "aiokafka.*", "asyncpg", "icu", "weasyprint", "pypdfium2"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
