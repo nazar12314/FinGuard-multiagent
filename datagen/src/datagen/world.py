@@ -60,16 +60,16 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
     truth = build_ground_truth(bank_rows, attempt_rows, config.our_bank)
     holders = read_account_holders(accounts_csv(amlworld, variant), bank_slice.accounts)
     first_booking: datetime = bank_slice.transactions.get_column("booked_at").min()  # type: ignore[assignment]
+    rings = laundering_rings(holders, truth.account_labels)
     customers = generate_customers(
         holders,
         monthly_volumes(bank_slice.transactions, holders),
         truth.account_labels,
         activity_starts=first_booking.date(),
         seed=config.seed,
+        rings=rings,
     )
-    contacts = generate_contacts(
-        customers.customers, laundering_rings(holders, truth.account_labels), config.seed
-    )
+    contacts = generate_contacts(customers.customers, rings, config.seed)
     companies = generate_companies(
         customers.customers, customers.labels, first_booking.date(), config.seed
     )

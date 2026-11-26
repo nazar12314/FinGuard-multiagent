@@ -180,8 +180,8 @@ Everything under `ground_truth/` is for evaluation only and never reaches the ru
 Bank 12's AMLworld entities are almost all partnerships, sole proprietorships and corporations, so FinGuard is an SME
 business neobank. Declared volumes follow each customer's real flows. About 60% of laundering-linked customers get a
 profile that doesn't fit their activity, and 10% of the others get an equally odd one for an innocent reason, so a
-profile alone never gives the label away. In the same way, customers in one laundering ring often share a device or,
-when they're registered in the same country, an address, but far more innocent customers share one too. Everyone is
+profile alone never gives the label away. In the same way, a laundering ring is mostly registered in one country, and
+its members often share a device or a registered address, but far more innocent customers share one too. Everyone is
 an adult when they sign up or join a board, and directors are appointed after their company's incorporation. Half of
 the laundering-linked companies have a shell-like ownership structure; 8% of the others have one for an innocent
 reason, with nominee directors drawn from the same pool.

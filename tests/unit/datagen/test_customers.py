@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from collections import Counter
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -86,7 +87,9 @@ def test_monthly_volume_leaves_out_moves_between_own_accounts() -> None:
     assert volumes.rows() == [("cus-1", 300.0)]
 
 
-def customers_for(count: int, laundering: int, seed: int = 7) -> Customers:
+def customers_for(
+    count: int, laundering: int, seed: int = 7, rings: list[list[str]] | None = None
+) -> Customers:
     ids = [f"E{number}" for number in range(count)]
     holders = pl.DataFrame(
         {
@@ -111,7 +114,7 @@ def customers_for(count: int, laundering: int, seed: int = 7) -> Customers:
             "laundering_transaction_count": [1] * laundering + [0] * (count - laundering),
         }
     )
-    return generate_customers(holders, volumes, account_labels, ACTIVITY_STARTS, seed)
+    return generate_customers(holders, volumes, account_labels, ACTIVITY_STARTS, seed, rings or [])
 
 
 def test_is_deterministic_for_a_seed() -> None:
@@ -224,3 +227,25 @@ def test_seeded_fakers_draw_the_same_cities_whatever_the_hash_seed() -> None:
         ).stdout.decode()
 
     assert cities("1") == cities("2")
+
+
+def test_most_members_of_a_ring_are_registered_in_its_home_country() -> None:
+    rings = [[f"cus-E{n}" for n in range(start, start + 5)] for start in range(0, 500, 5)]
+
+    countries = dict(
+        customers_for(500, 500, rings=rings).customers.select("customer_id", "country").rows()
+    )
+
+    at_home = [
+        max(Counter(countries[member] for member in ring).values()) / len(ring) for ring in rings
+    ]
+    assert sum(at_home) / len(at_home) == pytest.approx(0.8, abs=0.1)
+
+
+def test_rings_leave_other_customers_in_their_countries() -> None:
+    without = customers_for(50, 5).customers
+    with_ring = customers_for(50, 5, rings=[["cus-E0", "cus-E1"]]).customers
+
+    others = pl.col("customer_id").is_in(["cus-E0", "cus-E1"]).not_()
+    columns = ["customer_id", "country"]
+    assert without.filter(others).select(columns).equals(with_ring.filter(others).select(columns))

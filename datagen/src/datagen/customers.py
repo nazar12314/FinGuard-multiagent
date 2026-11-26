@@ -110,6 +110,9 @@ COUNTRIES = [
 # Most sole traders are nationals of their country of residence; the rest come from these.
 FOREIGN_NATIONALITIES = [("UA", "uk_UA", 0.5), ("GB", "en_GB", 0.2), ("IT", "it_IT", 0.15)]
 FOREIGN_NATIONAL_SHARE = 0.25
+# A laundering ring is usually run from one country, so most of its members are registered
+# there, and can share a registered address.
+RING_MEMBER_AT_HOME = 0.8
 
 EARLIEST_ONBOARDING = date(2015, 1, 1)
 ADULT_AGE_DAYS = 18 * 366
@@ -202,9 +205,11 @@ def generate_customers(
     account_labels: pl.DataFrame,
     activity_starts: date,
     seed: int,
+    rings: Sequence[Sequence[str]] = (),
 ) -> Customers:
     rng = random.Random(f"{seed}:customers")
     fakers = locale_fakers(seed, "customers")
+    ring_countries = _ring_countries(rings, seed)
     laundering = set(
         holders.join(account_labels, on="account_id")
         .filter(pl.col("laundering_transaction_count") > 0)
@@ -229,6 +234,7 @@ def generate_customers(
             profile = "inconsistent" if laundering_linked else "hard_negative"
 
         country = weighted_choice(rng, [(country, country.weight) for country in COUNTRIES])
+        country = ring_countries.get(customer["customer_id"], country)
         sole_trader = customer["customer_type"] == "sole_trader"
         industry = rng.choice(
             [i for i in INDUSTRIES if (i.sole_traders if sole_trader else i.companies)]
@@ -337,6 +343,19 @@ CUSTOMER_LABEL_SCHEMA = pl.Schema(
         "hard_negative_story": pl.String(),
     }
 )
+
+
+def _ring_countries(rings: Sequence[Sequence[str]], seed: int) -> dict[str, Country]:
+    """Where ring members are registered: their first ring's home country, mostly. Drawn from
+    a stream of its own, so other customers get the same countries as without rings."""
+    rng = random.Random(f"{seed}:ring-countries")
+    countries: dict[str, Country] = {}
+    for ring in rings:
+        home = weighted_choice(rng, [(country, country.weight) for country in COUNTRIES])
+        for customer_id in ring:
+            if rng.random() < RING_MEMBER_AT_HOME:
+                countries.setdefault(customer_id, home)
+    return countries
 
 
 def locale_fakers(seed: int, stream: str) -> dict[str, Faker]:
