@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+import pypdfium2 as pdfium
+
+from datagen.people import customers_of_people
 
 EXAMPLES = 5
 
@@ -128,6 +131,8 @@ class Signal:
     laundering_linked: int
     flagged: int
     flagged_laundering_linked: int
+    # What a signal that says nothing would catch by chance: flagged times the base rate.
+    expected_by_chance: float
     # Share of flagged customers who are laundering-linked, of laundering-linked customers who
     # are flagged, and precision over the population's base rate (1 means it says nothing).
     precision: float | None
@@ -136,11 +141,21 @@ class Signal:
 
 
 @dataclass(frozen=True)
+class BookingDay:
+    day: str
+    transactions: int
+    laundering: int
+
+
+@dataclass(frozen=True)
 class QualityReport:
     world: str
     tables: dict[str, TableProfile]
     checks: list[Check]
     signals: list[Signal]
+    # AMLworld's laundering doesn't spread evenly over time, which time-based splits and
+    # features have to allow for.
+    booking_days: list[BookingDay]
 
     @property
     def failed_checks(self) -> list[Check]:
@@ -158,6 +173,7 @@ def quality_report(world: Path, files: dict[str, pl.DataFrame]) -> QualityReport
         tables={name: _profile(frame) for name, frame in sorted(tables.items())},
         checks=_checks(tables, world),
         signals=_signals(tables),
+        booking_days=_booking_days(tables),
     )
 
 
@@ -180,7 +196,7 @@ def _checks(tables: dict[str, pl.DataFrame], world: Path) -> list[Check]:
     for table, type_column, id_column, targets in POLYMORPHIC_REFERENCES:
         checks += _polymorphic_references(tables, table, type_column, id_column, targets)
     checks += [check(tables) for check in DOMAIN_CHECKS]
-    checks.append(_document_files(tables["documents"], world))
+    checks += [check(tables, world) for check in DOCUMENT_CHECKS]
     return checks
 
 
@@ -346,6 +362,116 @@ def _customers_onboarded_before_their_activity(tables: dict[str, pl.DataFrame]) 
     return _check("every customer is onboarded before its first transaction", wrong["customer_id"])
 
 
+def _officers_appointed_while_the_company_existed(tables: dict[str, pl.DataFrame]) -> Check:
+    wrong = (
+        tables["officers"]
+        .join(
+            tables["companies"].select("company_id", "customer_id", "incorporated_on"),
+            on="company_id",
+        )
+        .join(
+            tables["customers"].select("customer_id", "onboarded_at"), on="customer_id", how="left"
+        )
+        .filter(
+            (pl.col("appointed_on") < pl.col("incorporated_on"))
+            | (pl.col("appointed_on") > pl.col("onboarded_at"))
+        )
+    )
+    return _check(
+        "every director is appointed after incorporation and before the company joined us",
+        _keys(wrong, ["company_id", "person_id"]),
+    )
+
+
+def _adults_when_they_sign(tables: dict[str, pl.DataFrame]) -> Check:
+    persons = tables["persons"]
+    adult_on = pl.col("birth_date").dt.offset_by("18y")
+    directors = tables["officers"].join(persons.select("person_id", "birth_date"), on="person_id")
+    sole_traders = persons.filter(pl.col("customer_id").is_not_null()).join(
+        tables["customers"].select("customer_id", "onboarded_at"), on="customer_id"
+    )
+    minors = pl.concat(
+        [
+            directors.filter(pl.col("appointed_on") < adult_on).select("person_id"),
+            sole_traders.filter(pl.col("onboarded_at") < adult_on).select("person_id"),
+        ]
+    )
+    return _check(
+        "every director is an adult when appointed, and every sole trader when onboarded",
+        minors["person_id"],
+    )
+
+
+def _registered_in_their_own_country(tables: dict[str, pl.DataFrame]) -> Check:
+    wrong = (
+        tables["customer_addresses"]
+        .filter(pl.col("role") == "registered")
+        .join(tables["addresses"].select("address_id", address_country="country"), on="address_id")
+        .join(tables["customers"].select("customer_id", "country"), on="customer_id")
+        .filter(pl.col("address_country") != pl.col("country"))
+    )
+    return _check("every customer's registered address is in its own country", wrong["customer_id"])
+
+
+def _customers_have_their_records(tables: dict[str, pl.DataFrame]) -> Check:
+    customers = tables["customers"]
+    companies = customers.filter(pl.col("customer_type") == "company").join(
+        tables["companies"], on="customer_id", how="anti"
+    )
+    sole_traders = customers.filter(pl.col("customer_type") == "sole_trader").join(
+        tables["persons"].filter(pl.col("customer_id").is_not_null()), on="customer_id", how="anti"
+    )
+    return _check(
+        "every company customer has a company record, and every sole trader a person",
+        pl.concat([companies["customer_id"], sole_traders["customer_id"]]),
+    )
+
+
+def _shared_attributes_are_explained(tables: dict[str, pl.DataFrame]) -> Check:
+    shared = pl.concat(
+        [
+            tables["customer_addresses"]
+            .group_by(attribute_id="address_id")
+            .agg(users=pl.col("customer_id").n_unique()),
+            tables["customer_devices"]
+            .group_by(attribute_id="device_id")
+            .agg(users=pl.col("customer_id").n_unique()),
+        ]
+    ).filter(pl.col("users") > 1)
+    unexplained = shared.join(
+        tables["ground_truth/shared_attribute_labels"], on="attribute_id", how="anti"
+    )
+    return _check(
+        "every address or device several customers use has a labelled reason",
+        unexplained["attribute_id"],
+    )
+
+
+def _laundering_linked_customers_have_documents(tables: dict[str, pl.DataFrame]) -> Check:
+    documents = tables["documents"]
+    missing = (
+        tables["ground_truth/customer_labels"]
+        .filter("laundering_linked")
+        .join(documents, on="customer_id", how="anti")
+    )
+    # A world built without documents has none to miss.
+    return _check(
+        "every laundering-linked customer has documents, when documents are built",
+        missing["customer_id"] if documents.height else pl.Series([], dtype=pl.String),
+    )
+
+
+def _articles_written_after_incorporation(tables: dict[str, pl.DataFrame]) -> Check:
+    wrong = (
+        tables["ground_truth/media_labels"]
+        .filter(pl.col("subject_type") == "company")
+        .join(tables["media/articles"], on="article_id")
+        .join(tables["companies"], left_on="subject_id", right_on="customer_id")
+        .filter(pl.col("published_on") < pl.col("incorporated_on"))
+    )
+    return _check("no article is about a company before it was incorporated", wrong["article_id"])
+
+
 DOMAIN_CHECKS: list[Callable[[dict[str, pl.DataFrame]], Check]] = [
     _companies_owned_in_full,
     _customer_companies_have_a_director,
@@ -356,10 +482,18 @@ DOMAIN_CHECKS: list[Callable[[dict[str, pl.DataFrame]], Check]] = [
     _attempt_sizes_match_their_transactions,
     _amounts_are_positive,
     _customers_onboarded_before_their_activity,
+    _officers_appointed_while_the_company_existed,
+    _adults_when_they_sign,
+    _registered_in_their_own_country,
+    _customers_have_their_records,
+    _shared_attributes_are_explained,
+    _laundering_linked_customers_have_documents,
+    _articles_written_after_incorporation,
 ]
 
 
-def _document_files(documents: pl.DataFrame, world: Path) -> Check:
+def _document_files(tables: dict[str, pl.DataFrame], world: Path) -> Check:
+    documents = tables["documents"]
     missing = [
         document_id
         for document_id, path in documents.select("document_id", "path").iter_rows()
@@ -370,6 +504,70 @@ def _document_files(documents: pl.DataFrame, world: Path) -> Check:
         "every document has its PDF and its ground truth on disk",
         pl.Series(missing, dtype=pl.String),
     )
+
+
+def _documents_match_their_ground_truth(tables: dict[str, pl.DataFrame], world: Path) -> Check:
+    wrong = []
+    for label in tables["ground_truth/document_labels"].rows(named=True):
+        path = world / "ground_truth" / "documents" / f"{label['document_id']}.json"
+        if not path.is_file():
+            continue  # reported by the files check
+        truth = json.loads(path.read_text())
+        injection = truth["injection"]
+        if (
+            [anomaly["type"] for anomaly in truth["anomalies"]] != label["anomalies"]
+            or (injection["technique"] if injection else None) != label["injection"]
+            or truth["scanned"] != label["scanned"]
+        ):
+            wrong.append(label["document_id"])
+    return _check(
+        "document labels agree with each document's ground truth",
+        pl.Series(wrong, dtype=pl.String),
+    )
+
+
+def _injections_are_in_the_pdf(tables: dict[str, pl.DataFrame], world: Path) -> Check:
+    """A labelled injection an agent could never see would score a resistance it never showed."""
+    injected = (
+        tables["ground_truth/document_labels"]
+        .filter(pl.col("injection").is_not_null())
+        .join(tables["documents"].select("document_id", "path"), on="document_id")
+    )
+    missing = []
+    for row in injected.rows(named=True):
+        pdf_path = world / row["path"]
+        truth = world / "ground_truth" / "documents" / f"{row['document_id']}.json"
+        if not pdf_path.is_file() or not truth.is_file():
+            continue  # reported by the files check
+        payload = json.loads(truth.read_text())["injection"]["payload"]
+        if row["scanned"]:
+            # Only a visible remark survives a scan, and reading it back would take OCR.
+            if row["injection"] != "visible_note":
+                missing.append(row["document_id"])
+        elif payload not in _pdf_text(pdf_path, metadata=row["injection"] == "metadata"):
+            missing.append(row["document_id"])
+    return _check(
+        "every labelled injection is in its PDF, and only visible ones are scanned",
+        pl.Series(missing, dtype=pl.String),
+    )
+
+
+def _pdf_text(path: Path, *, metadata: bool) -> str:
+    document = pdfium.PdfDocument(path)
+    try:
+        if metadata:
+            return str(document.get_metadata_dict().get("Subject", ""))
+        pages = [page.get_textpage().get_text_bounded() for page in document]
+        return " ".join(" ".join(pages).split())
+    finally:
+        document.close()
+
+
+DOCUMENT_CHECKS: list[Callable[[dict[str, pl.DataFrame], Path], Check]] = [
+    _document_files,
+    _documents_match_their_ground_truth,
+    _injections_are_in_the_pdf,
+]
 
 
 def _check(name: str, offending: pl.Series) -> Check:
@@ -386,7 +584,9 @@ def _signals(tables: dict[str, pl.DataFrame]) -> list[Signal]:
     customers = set(labels["customer_id"])
     linked = set(labels.filter("laundering_linked")["customer_id"])
     with_documents = set(tables["documents"]["customer_id"])
-    people = _customers_of_people(tables)
+    people = customers_of_people(
+        tables["persons"], tables["companies"], tables["officers"], tables["shareholdings"]
+    )
 
     def customers_of(subjects: pl.DataFrame) -> set[str]:
         companies = subjects.filter(pl.col("subject_type") == "company")["subject_id"]
@@ -405,6 +605,8 @@ def _signals(tables: dict[str, pl.DataFrame]) -> list[Signal]:
         tables["documents"].select("document_id", "customer_id"), on="document_id"
     )
     flagged_customers = {
+        # Documents exist only for a labelled sample; see the README.
+        "has a document pack": with_documents,
         "profile: declared volume far below activity": anomaly(
             labels, "anomalies", "declared_volume_far_below_activity"
         ),
@@ -452,8 +654,8 @@ def _signals(tables: dict[str, pl.DataFrame]) -> list[Signal]:
 def _signal(
     name: str, population_name: str, population: set[str], linked: set[str], flagged: set[str]
 ) -> Signal:
-    flagged &= population
-    linked &= population
+    flagged = flagged & population
+    linked = linked & population
     hits = len(flagged & linked)
     precision = hits / len(flagged) if flagged else None
     base_rate = len(linked) / len(population) if population else 0
@@ -464,47 +666,31 @@ def _signal(
         laundering_linked=len(linked),
         flagged=len(flagged),
         flagged_laundering_linked=hits,
+        expected_by_chance=round(len(flagged) * base_rate, 1),
         precision=_rounded(precision),
         recall=_rounded(hits / len(linked) if linked else None),
         lift=_rounded(precision / base_rate if precision is not None and base_rate else None),
     )
 
 
+def _booking_days(tables: dict[str, pl.DataFrame]) -> list[BookingDay]:
+    days = (
+        tables["transactions"]
+        .select("transaction_id", day=pl.col("booked_at").dt.date())
+        .join(tables["ground_truth/transaction_labels"], on="transaction_id")
+        .group_by("day")
+        .agg(transactions=pl.len(), laundering=pl.col("is_laundering").sum())
+        .sort("day")
+    )
+    return [
+        BookingDay(day=day.isoformat(), transactions=transactions, laundering=laundering)
+        for day, transactions, laundering in days.iter_rows()
+    ]
+
+
 def _sharing(links: pl.DataFrame, attribute: str) -> set[str]:
     shared = links.filter(pl.col("customer_id").n_unique().over(attribute) > 1)
     return set(shared["customer_id"])
-
-
-def _customers_of_people(tables: dict[str, pl.DataFrame]) -> pl.DataFrame:
-    """(person_id, customer_id) for sole traders and for the officers and owners of company
-    customers, including owners further up a holding chain."""
-    shareholdings = tables["shareholdings"]
-    reach = tables["companies"].filter(pl.col("customer_id").is_not_null())
-    reach = reach.select("company_id", "customer_id")
-    while True:
-        parents = (
-            shareholdings.filter(pl.col("holder_type") == "company")
-            .join(reach, on="company_id")
-            .select(company_id="holder_id", customer_id="customer_id")
-        )
-        grown = pl.concat([reach, parents]).unique()
-        if grown.height == reach.height:
-            break
-        reach = grown
-    owners = shareholdings.filter(pl.col("holder_type") == "person").select(
-        "company_id", person_id="holder_id"
-    )
-    officers = tables["officers"].select("company_id", "person_id")
-    return pl.concat(
-        [
-            tables["persons"]
-            .filter(pl.col("customer_id").is_not_null())
-            .select("person_id", "customer_id"),
-            pl.concat([owners, officers])
-            .join(reach, on="company_id")
-            .select("person_id", "customer_id"),
-        ]
-    ).unique()
 
 
 def _rounded(value: float | None) -> float | None:
@@ -548,7 +734,8 @@ def render_markdown(report: QualityReport) -> str:
         "flagged customers who are laundering-linked, recall the share of laundering-linked "
         "customers who are flagged, and lift is precision over the population's base rate: 1 "
         "means the signal says nothing. A useful signal has a lift well above 1 and a precision "
-        "well below 100%, so it never gives the label away on its own.",
+        "well below 100%, so it never gives the label away on its own. With few flagged "
+        "customers, compare the laundering-linked hits with what chance alone would give.",
         "",
     ]
     for population in dict.fromkeys(signal.population for signal in report.signals):
@@ -562,17 +749,32 @@ def render_markdown(report: QualityReport) -> str:
             f"{first.laundering_linked:,} of {first.population_size:,} are laundering-linked "
             f"({_percent(base_rate)}).",
             "",
-            "| Signal | Flagged | Precision | Recall | Lift |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| Signal | Flagged | Laundering-linked (by chance) | Precision | Recall | Lift |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
         for signal in report.signals:
             if signal.population == population:
                 lift = "-" if signal.lift is None else f"{signal.lift:.1f}"
                 lines.append(
-                    f"| {signal.name} | {signal.flagged:,} | {_percent(signal.precision)} | "
-                    f"{_percent(signal.recall)} | {lift} |"
+                    f"| {signal.name} | {signal.flagged:,} | "
+                    f"{signal.flagged_laundering_linked:,} ({signal.expected_by_chance:g}) | "
+                    f"{_percent(signal.precision)} | {_percent(signal.recall)} | {lift} |"
                 )
         lines.append("")
+    lines += [
+        "## Laundering by booking day",
+        "",
+        "AMLworld's laundering isn't spread evenly over time: a sparse tail of mostly laundering "
+        "transactions follows the busy days, so the booking date alone flags some of it. "
+        "Time-based splits and features have to allow for that.",
+        "",
+        "| Day | Transactions | Laundering | Share |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for day in report.booking_days:
+        share = _percent(day.laundering / day.transactions)
+        lines.append(f"| {day.day} | {day.transactions:,} | {day.laundering:,} | {share} |")
+    lines.append("")
     return "\n".join(lines)
 
 

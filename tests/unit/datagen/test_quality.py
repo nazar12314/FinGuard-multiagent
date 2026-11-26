@@ -1,4 +1,6 @@
 import json
+import shutil
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -6,6 +8,7 @@ import pytest
 from tests.amlworld_files import OUR_BANK, attempt, csv_row, write_raw_files
 
 from datagen import quality
+from datagen.documents import content
 from datagen.quality import Check, DataQualityError, quality_report, render_markdown
 from datagen.world import WorldConfig, build_world
 
@@ -131,36 +134,6 @@ def test_signal_strength_compares_precision_with_the_base_rate() -> None:
     assert quality._signal("flag", "customers", population, {"c0"}, set()).lift is None
 
 
-def test_people_reach_customers_up_a_holding_chain_even_a_circular_one() -> None:
-    tables = {
-        "companies": pl.DataFrame(
-            {"company_id": ["co-1", "co-h1", "co-h2"], "customer_id": ["cus-1", None, None]}
-        ),
-        "shareholdings": pl.DataFrame(
-            {
-                "company_id": ["co-1", "co-h1", "co-h2", "co-h2"],
-                "holder_id": ["co-h1", "co-h2", "co-1", "per-top"],
-                "holder_type": ["company", "company", "company", "person"],
-            }
-        ),
-        "officers": pl.DataFrame({"company_id": ["co-1"], "person_id": ["per-director"]}),
-        "persons": pl.DataFrame(
-            {
-                "person_id": ["per-sole", "per-director", "per-top"],
-                "customer_id": ["cus-2", None, None],
-            }
-        ),
-    }
-
-    people = quality._customers_of_people(tables).sort("person_id")
-
-    assert people.rows() == [
-        ("per-director", "cus-1"),
-        ("per-sole", "cus-2"),
-        ("per-top", "cus-1"),
-    ]
-
-
 def test_a_failed_check_stops_the_build_and_keeps_the_previous_world(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -185,6 +158,7 @@ def test_markdown_lists_failures_with_examples(world: Path) -> None:
         tables=report.tables,
         checks=[*report.checks, Check("ids are unique", 2, ["a", "b"])],
         signals=report.signals,
+        booking_days=report.booking_days,
     )
 
     markdown = render_markdown(broken)
@@ -192,3 +166,104 @@ def test_markdown_lists_failures_with_examples(world: Path) -> None:
     assert f"**1 of {len(broken.checks)} checks failed.**" in markdown
     assert "| ids are unique | **fail**: 2 rows, e.g. a, b |" in markdown
     assert "### Among customers" in markdown
+
+
+def test_finds_impossible_dates_and_foreign_registered_addresses(world: Path) -> None:
+    files = frames(world)
+    officers = files["officers.parquet"]
+    first = officers.row(0, named=True)
+    files["officers.parquet"] = officers.with_columns(
+        appointed_on=pl.when(pl.int_range(pl.len()) == 0)
+        .then(pl.lit(date(1900, 1, 1)))
+        .otherwise("appointed_on")
+    )
+    addresses = files["addresses.parquet"]
+    registered = (
+        files["customer_addresses.parquet"]
+        .filter(pl.col("role") == "registered")
+        .row(0, named=True)
+    )
+    files["addresses.parquet"] = addresses.with_columns(
+        country=pl.when(pl.col("address_id") == registered["address_id"])
+        .then(pl.lit("XX"))
+        .otherwise("country")
+    )
+
+    failed = failures(world, files)
+
+    officer = f"{first['company_id']}/{first['person_id']}"
+    assert failed[
+        "every director is appointed after incorporation and before the company joined us"
+    ] == [officer]
+    assert failed[
+        "every director is an adult when appointed, and every sole trader when onboarded"
+    ] == [first["person_id"]]
+    assert (
+        registered["customer_id"]
+        in failed["every customer's registered address is in its own country"]
+    )
+
+
+def test_finds_a_shared_device_nobody_explained(world: Path) -> None:
+    files = frames(world)
+    devices = files["customer_devices.parquet"]
+    customers = devices.get_column("customer_id").unique().sort()
+    shared = pl.DataFrame(
+        {
+            "customer_id": customers.head(2),
+            "device_id": ["dev-unexplained"] * 2,
+            "first_seen_at": [date(2022, 1, 1)] * 2,
+        },
+        schema=devices.schema,
+    )
+    files["customer_devices.parquet"] = pl.concat([devices, shared])
+
+    failed = failures(world, files)
+
+    assert failed["every address or device several customers use has a labelled reason"] == [
+        "dev-unexplained"
+    ]
+
+
+@pytest.fixture(scope="module")
+def documented_world(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    directory = tmp_path_factory.mktemp("documented")
+    rows = [csv_row(OUR_BANK, f"C{n}", "002", f"B{n}") for n in range(4)]
+    write_raw_files(directory / "raw", rows)
+    # Every customer gets an injection, so each technique is likely to turn up.
+    rate = content.INJECTION_RATE
+    content.INJECTION_RATE = 1.0
+    try:
+        config = WorldConfig(seed=11, document_sample=4)
+        return build_world(config, directory / "raw", directory / "worlds")
+    finally:
+        content.INJECTION_RATE = rate
+
+
+def test_a_document_world_passes_and_its_injections_are_in_the_pdfs(documented_world: Path) -> None:
+    report = json.loads((documented_world / "quality_report.json").read_text())
+
+    assert report["passed"] is True
+    labels = pl.read_parquet(documented_world / "ground_truth" / "document_labels.parquet")
+    assert labels.get_column("injection").drop_nulls().len() == 4
+
+
+def test_finds_an_injection_missing_from_its_pdf(documented_world: Path, tmp_path: Path) -> None:
+    files = frames(documented_world)
+    labels = files["ground_truth/document_labels.parquet"]
+    injected = labels.filter(pl.col("injection").is_not_null() & ~pl.col("scanned")).row(
+        0, named=True
+    )
+    clean = labels.filter(pl.col("injection").is_null() & ~pl.col("scanned")).row(0, named=True)
+    copy = tmp_path / "world"
+    shutil.copytree(documented_world, copy)
+    shutil.copy(
+        copy / "documents" / f"{clean['document_id']}.pdf",
+        copy / "documents" / f"{injected['document_id']}.pdf",
+    )
+
+    failed = failures(copy, files)
+
+    assert failed["every labelled injection is in its PDF, and only visible ones are scanned"] == [
+        injected["document_id"]
+    ]
