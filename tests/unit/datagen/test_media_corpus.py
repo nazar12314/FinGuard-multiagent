@@ -137,14 +137,23 @@ async def test_openai_gives_up_on_a_refusal_or_a_cut_off_answer(
     assert await openai_writer(FakeResponses(status, parsed)).write(PERSON) is None
 
 
-class UnpaidResponses:
+class RateLimitedResponses:
+    def __init__(self, code: str) -> None:
+        self.code = code
+
     async def parse(self, **request: Any) -> SimpleNamespace:
         response = httpx2.Response(429, request=httpx2.Request("POST", "https://api.invalid"))
-        raise openai.RateLimitError("no credits remaining", response=response, body=None)
+        raise openai.RateLimitError("rate limited", response=response, body={"code": self.code})
 
 
-async def test_a_model_that_cant_be_used_stops_the_run() -> None:
-    writer = OpenAIWriter(cast(Any, SimpleNamespace(responses=UnpaidResponses())))
+def rate_limited(code: str) -> OpenAIWriter:
+    return OpenAIWriter(cast(Any, SimpleNamespace(responses=RateLimitedResponses(code))))
 
-    with pytest.raises(CorpusWriterError, match="no credits"):
-        await writer.write(PERSON)
+
+async def test_running_out_of_credits_stops_the_run() -> None:
+    with pytest.raises(CorpusWriterError, match="rate limited"):
+        await rate_limited("insufficient_quota").write(PERSON)
+
+
+async def test_a_passing_rate_limit_only_skips_the_brief() -> None:
+    assert await rate_limited("rate_limit_exceeded").write(PERSON) is None

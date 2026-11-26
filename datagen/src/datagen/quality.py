@@ -517,6 +517,7 @@ def _documents_match_their_ground_truth(tables: dict[str, pl.DataFrame], world: 
         if (
             [anomaly["type"] for anomaly in truth["anomalies"]] != label["anomalies"]
             or (injection["technique"] if injection else None) != label["injection"]
+            or (injection["goal"] if injection else None) != label["injection_goal"]
             or truth["scanned"] != label["scanned"]
         ):
             wrong.append(label["document_id"])

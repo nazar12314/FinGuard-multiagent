@@ -38,7 +38,7 @@ _PUNCTUATION = re.compile(r"[^\w\s-]")
 # Initials ("K.D.", "J") and titles aren't part of the name a customer gives.
 _INITIALS = re.compile(r"^(\w\.)+\w?$|^\w$")
 TITLES = frozenset(
-    ["dr", "mr", "mrs", "ms", "miss", "prof", "sir", "dame", "lord", "lady", "sheikh", "hon", "rev"]
+    ["dr", "mr", "mrs", "ms", "miss", "prof", "sir", "dame", "lord", "lady", "sheikh", "rev"]
 )
 # East Slavic patronymics (Viktorivna, Ivanovich): the middle name of a surname-first name.
 _PATRONYMIC = re.compile(r"(vich|vych|vna|ich|ych)$", re.IGNORECASE)
@@ -282,7 +282,8 @@ def _without_a_middle_name(
 ) -> list[str] | None:
     if listed.syllabic or len(tokens) < 3:
         return None
-    patronymics = [index for index, token in enumerate(tokens) if _PATRONYMIC.search(token)]
+    # Never the first token: a surname like Abramovich or a given name like Friedrich.
+    patronymics = [i for i in range(1, len(tokens)) if _PATRONYMIC.search(tokens[i])]
     dropped = patronymics[0] if patronymics else rng.randrange(1, len(tokens) - 1)
     return tokens[:dropped] + tokens[dropped + 1 :]
 

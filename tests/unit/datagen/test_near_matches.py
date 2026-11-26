@@ -234,6 +234,8 @@ def listing(name: str, *, syllabic: bool = False) -> _Listed:
         (["Nazarova", "Kateryna", "Viktorivna"], ["Nazarova", "Kateryna"]),
         (["Petr", "Ivanovich", "Sidorov"], ["Petr", "Sidorov"]),
         (["Anna", "Maria", "Kowalska"], ["Anna", "Kowalska"]),
+        (["Abramovich", "Roman", "Arkadyevich"], ["Abramovich", "Roman"]),
+        (["Friedrich", "Wilhelm", "Muller"], ["Friedrich", "Muller"]),
         (["Anna", "Kowalska"], None),
     ],
 )

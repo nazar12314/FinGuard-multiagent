@@ -177,12 +177,12 @@ class OpenAIWriter:
                 input=brief.prompt(),
                 text_format=ArticleDraft,
             )
-        except (
-            openai.AuthenticationError,
-            openai.PermissionDeniedError,
-            openai.RateLimitError,
-        ) as error:
+        except (openai.AuthenticationError, openai.PermissionDeniedError) as error:
             raise CorpusWriterError(f"{type(error).__name__}: {error}") from error
+        except openai.RateLimitError as error:
+            if error.code == "insufficient_quota":
+                raise CorpusWriterError(f"{type(error).__name__}: {error}") from error
+            return None  # a burst past the SDK's own retries; the brief is tried again
         # A refusal or a cut-off answer leaves nothing parsed.
         if response.status != "completed":
             return None
