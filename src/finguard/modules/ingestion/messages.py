@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
 
 from finguard.platform.contracts import MessageContract
 
@@ -29,6 +29,11 @@ class Money(BaseModel):
     # amount is a string.
     amount: Decimal = Field(gt=0, json_schema_extra={"pattern": r"^(?!0+(\.0+)?$)\d+(\.\d+)?$"})
     currency: str = Field(pattern=r"^[A-Z]{3}$")
+
+    @field_serializer("amount", when_used="json")
+    def _plain_notation(self, amount: Decimal) -> str:
+        # str() would write 1E-7, which the published pattern rejects.
+        return format(amount, "f")
 
 
 class TransactionBooked(BaseModel):

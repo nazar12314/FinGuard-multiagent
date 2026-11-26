@@ -72,7 +72,7 @@ def test_writes_the_world_files_and_a_manifest(tmp_path: Path, raw_dir: Path) ->
         "customers": 2,
         "laundering_linked_customers": 1,
         "documents": 0,
-        "media_articles": manifest["counts"]["media_articles"],
+        "media_articles": pl.read_parquet(world / "media" / "articles.parquet").height,
     }
     assert set(manifest["amlworld_sha256"]) == {
         "HI-Small_Trans.csv",
