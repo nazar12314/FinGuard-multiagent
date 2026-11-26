@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -204,3 +207,20 @@ def test_risk_rating_follows_the_onboarding_rule(
     industry = Industry("test", "Test", industry_risk)
 
     assert risk_rating(industry, onboarded_at, ACTIVITY_STARTS, expected_monthly, purpose) == rating
+
+
+def test_seeded_fakers_draw_the_same_cities_whatever_the_hash_seed() -> None:
+    program = (
+        "from datagen.customers import locale_fakers\n"
+        "fakers = locale_fakers(7, 'test')\n"
+        "print([faker.city() for faker in fakers.values() for _ in range(5)])"
+    )
+
+    def cities(hash_seed: str) -> str:
+        environment = {**os.environ, "PYTHONHASHSEED": hash_seed}
+        command = [sys.executable, "-c", program]
+        return subprocess.run(
+            command, env=environment, capture_output=True, check=True
+        ).stdout.decode()
+
+    assert cities("1") == cities("2")

@@ -348,6 +348,11 @@ def locale_fakers(seed: int, stream: str) -> dict[str, Faker]:
     for locale in sorted(locales):
         faker = Faker(locale)
         faker.seed_instance(f"{seed}:{stream}:{locale}")
+        if locale == "it_IT":
+            # Faker builds the Italian city list from a set, so its order, and every city()
+            # drawn from it, changes with Python's hash seed.
+            address = next(p for p in faker.get_providers() if hasattr(p, "cities"))
+            address.cities = sorted(address.cities)
         fakers[locale] = faker
     return fakers
 
