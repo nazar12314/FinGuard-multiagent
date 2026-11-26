@@ -8,6 +8,7 @@ from pathlib import Path
 
 from datagen.amlworld import AmlworldFormatError, canonical_bank_id
 from datagen.media_corpus import CORPUS, OpenAIWriter, briefs, read_corpus, write_corpus
+from datagen.quality import DataQualityError
 from datagen.replay import ONE_DAY_PER_MINUTE, Booking, Pace, bookings, replay
 from datagen.world import WorldConfig, build_world, world_dir
 from finguard.core.settings import KafkaSettings
@@ -76,7 +77,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 _replay(arguments)
             case "media":
                 _media()
-    except (FileNotFoundError, AmlworldFormatError) as error:
+    except (FileNotFoundError, AmlworldFormatError, DataQualityError) as error:
         sys.exit(f"finguard-datagen: {error}")
 
 

@@ -26,6 +26,7 @@ from datagen.ground_truth import build_ground_truth, patterns_file, read_attempt
 from datagen.media import assign_media
 from datagen.media_corpus import read_corpus
 from datagen.near_matches import opensanctions_files, plant_near_matches, read_listed
+from datagen.quality import DataQualityError, quality_report, write_quality_report
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,12 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
         frame.write_parquet(staging / name)
     manifest = world_manifest(config, files, opensanctions_files(opensanctions).values())
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    report = quality_report(staging, files)
+    write_quality_report(report, staging)
+    if failed := report.failed_checks:
+        raise DataQualityError(
+            f"{len(failed)} data-quality checks failed; see {staging / 'quality_report.md'}"
+        )
 
     if target.exists():
         shutil.rmtree(target)

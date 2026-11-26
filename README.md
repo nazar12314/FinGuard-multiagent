@@ -173,6 +173,7 @@ world keeps only the transactions an account at our bank is party to, since thos
 | `ground_truth/document_labels.parquet`, `ground_truth/documents/*.json` | Each document's anomalies, planted injection and whether it was scanned, and its full ground truth: every field and table cell as generated, and where each anomaly sits |
 | `media/articles.parquet`, `ground_truth/media_labels.parquet` | Fictional news articles about the world's people and companies, and whether each is relevant adverse media, a namesake's or harmless |
 | `manifest.json` | Seed, AMLworld variant, our bank, FX rates, their hash and row counts |
+| `quality_report.md`, `quality_report.json` | The data-quality report: row counts, null rates, integrity checks and how much each red flag says about the label |
 
 Everything under `ground_truth/` is for evaluation only and never reaches the running system.
 
@@ -207,6 +208,20 @@ an OpenAI model with placeholders for the subject: `OPENAI_API_KEY=... uv run fi
 missing ones and can be rerun. Each build fills the placeholders with its own people and companies. A quarter of the
 laundering-linked customers' people and companies get relevant adverse coverage (1% of the others), 3% of people get a
 namesake's crime story, and 5% of everyone gets harmless coverage.
+
+### Data-quality report
+
+Every build checks the world before publishing it and writes `quality_report.md` (to read) and `quality_report.json`
+(for tooling) next to the data. The checks cover unique keys, every reference between files (labels included, so a
+planted label always points at something that exists), ownership that adds up to 100% for every company, a director
+for every company customer, labels that agree with each other and with the transactions, positive amounts and
+onboarding before activity. If any check fails, the build stops with an error, the previous world stays as it was, and
+the half-built world with its report is left in `data/worlds/.seed-<N>.building/` for inspection.
+
+The report also measures each noisy signal (profile anomalies, shared devices and addresses, shell-like structures,
+watchlist near-matches, adverse media and document anomalies) against the laundering label: precision, recall, and
+lift over the base rate. A useful red flag has a lift well above 1 and a precision well below 100%. Document signals
+are measured among customers with documents, since that sample over-represents laundering.
 
 ### Replaying a world into Kafka
 
