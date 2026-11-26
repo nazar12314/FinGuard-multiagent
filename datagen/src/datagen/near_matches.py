@@ -1,14 +1,17 @@
+import calendar
 import random
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import partial
 from pathlib import Path
 
 import polars as pl
 
 from finguard.modules.screening.adapters.icu_transliterator import IcuTransliterator
-from finguard.modules.screening.domain.watchlist import name_forms
+from finguard.modules.screening.adapters.opensanctions import COLLECTION_FILES
+from finguard.modules.screening.domain.watchlist import SCREENED_SCHEMAS, name_forms
 
 # A screening hit is a true match when our person is the listed one (name variant, same birth
 # date and nationality) and a false positive when only the name is close. True matches are
@@ -20,11 +23,32 @@ NAMESAKE = 0.02
 COMPANY_NAMESAKE = 0.01
 # Most true matches are sanctioned; politically exposed people run businesses too.
 TRUE_MATCH_FROM_SANCTIONS = 0.7
+# A true match takes the listed birth date, so the listed person must be old enough to have
+# directed a company since its incorporation, and young enough to still run one.
+TRUE_MATCH_AGES = range(40, 86)
+# A namesake is born at least this many years apart from every listed birth date.
+NAMESAKE_YEARS_APART = 4
 
 SPELLING_SWAPS = [("kh", "h"), ("y", "i"), ("ou", "u"), ("sch", "sh"), ("ph", "f"), ("ei", "ey")]
 _FULL_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_YEAR_MONTH = re.compile(r"^(\d{4})-(\d{2})$")
 _YEAR = re.compile(r"^(\d{4})")
+_COUNTRY_CODE = re.compile(r"^[a-z]{2}$")
 _PUNCTUATION = re.compile(r"[^\w\s-]")
+# Initials ("K.D.", "J") and titles aren't part of the name a customer gives.
+_INITIALS = re.compile(r"^(\w\.)+\w?$|^\w$")
+TITLES = frozenset(
+    ["dr", "mr", "mrs", "ms", "miss", "prof", "sir", "dame", "lord", "lady", "sheikh", "hon", "rev"]
+)
+# East Slavic patronymics (Viktorivna, Ivanovich): the middle name of a surname-first name.
+_PATRONYMIC = re.compile(r"(vich|vych|vna|ich|ych)$", re.IGNORECASE)
+# Scripts that ICU romanises syllable by syllable, so tokens aren't whole names.
+_SYLLABIC_SCRIPTS = [
+    range(0x0E00, 0x0E80),
+    range(0x3040, 0x3100),
+    range(0x3400, 0xA000),
+    range(0xAC00, 0xD7B0),
+]
 # Legal-form words of listed organisations, dropped so a namesake reads like an ordinary SME.
 LEGAL_WORDS = frozenset(
     [
@@ -64,10 +88,7 @@ class NearMatches:
 
 
 def opensanctions_files(directory: Path) -> dict[str, Path]:
-    return {
-        "sanctions": directory / "sanctions.targets.simple.csv",
-        "peps": directory / "peps.targets.simple.csv",
-    }
+    return {collection: directory / name for collection, name in COLLECTION_FILES.items()}
 
 
 def read_listed(directory: Path) -> pl.DataFrame:
@@ -82,7 +103,7 @@ def read_listed(directory: Path) -> pl.DataFrame:
         frames.append(
             pl.scan_csv(path, infer_schema=False)
             .select("id", "schema", "name", "birth_date", "countries")
-            .filter(pl.col("schema").is_in(["Person", "Organization", "Company"]))
+            .filter(pl.col("schema").is_in(list(SCREENED_SCHEMAS)))
             .with_columns(collection=pl.lit(collection))
             .collect()
         )
@@ -99,6 +120,7 @@ def plant_near_matches(
     company_customers: pl.DataFrame,
     laundering_people: set[str],
     listed: pl.DataFrame,
+    activity_starts: date,
     seed: int,
 ) -> NearMatches:
     rng = random.Random(f"{seed}:near-matches")
@@ -123,10 +145,14 @@ def plant_near_matches(
         draw = rng.random()
         if draw < true_rate:
             pool = sanctioned_people if rng.random() < TRUE_MATCH_FROM_SANCTIONS else peps
-            listed_person = pool.pick(rng, with_birth_date=True)
+            listed_person = pool.pick(
+                rng, lambda listed: _can_be_the_same_person(listed, activity_starts)
+            )
             label = "true_match"
         elif draw < true_rate + NAMESAKE:
-            listed_person = everyone.pick(rng)
+            listed_person = everyone.pick(
+                rng, partial(_can_be_a_namesake, nationality=str(person["nationality"]))
+            )
             label = "false_positive"
         else:
             continue
@@ -168,8 +194,30 @@ class _Listed:
     collection: str
     name: str
     latin_spellings: list[str]
-    birth_date: str | None
-    country: str | None
+    birth_dates: list[str]
+    countries: list[str]
+    # Romanised syllable by syllable (Chinese, Japanese, Korean, Thai).
+    syllabic: bool
+
+    @property
+    def nationality(self) -> str | None:
+        # Historic or regional codes (suhh, gb-nir) aren't nationalities a customer can hold.
+        valid = [country for country in self.countries if _COUNTRY_CODE.match(country)]
+        return valid[0].upper() if valid else None
+
+
+def _can_be_the_same_person(listed: _Listed, activity_starts: date) -> bool:
+    year = _YEAR.match(listed.birth_dates[0]) if listed.birth_dates else None
+    return (
+        year is not None
+        and activity_starts.year - int(year.group(1)) in TRUE_MATCH_AGES
+        and listed.nationality is not None
+    )
+
+
+def _can_be_a_namesake(listed: _Listed, nationality: str) -> bool:
+    # With no birth date to tell them apart, a namesake must differ by nationality.
+    return bool(listed.birth_dates) or nationality.lower() not in listed.countries
 
 
 class _Pool:
@@ -182,17 +230,19 @@ class _Pool:
         self._transliterator = transliterator
         self._organisations = organisations
 
-    def pick(self, rng: random.Random, *, with_birth_date: bool = False) -> _Listed:
+    def pick(
+        self, rng: random.Random, accept: Callable[[_Listed], bool] = lambda _: True
+    ) -> _Listed:
         for _ in range(10_000):
             row = self._rows.row(rng.randrange(self._rows.height), named=True)
             listed = self._usable(row)
-            if listed and (listed.birth_date or not with_birth_date):
+            if listed and accept(listed):
                 return listed
         raise ValueError("no usable listed entity found")
 
     def _usable(self, row: dict[str, str | None]) -> _Listed | None:
         spellings = [
-            " ".join(self._meaningful(_PUNCTUATION.sub("", spelling).split()))
+            " ".join(self._meaningful(_name_tokens(spelling)))
             for spelling in self._transliterator.latin_spellings(row["name"] or "")
         ]
         tokens = spellings[0].split()
@@ -201,21 +251,40 @@ class _Pool:
             return None
         if min(map(len, tokens)) < 2:
             return None
-        birth_dates = [d for d in (row["birth_date"] or "").split(";") if d]
-        countries = [c.upper() for c in (row["countries"] or "").split(";") if c]
+        name = str(row["name"])
         return _Listed(
             entity_id=str(row["id"]),
             collection=str(row["collection"]),
-            name=str(row["name"]),
+            name=name,
             latin_spellings=list(dict.fromkeys(spellings)),
-            birth_date=birth_dates[0] if birth_dates else None,
-            country=countries[0] if countries else None,
+            birth_dates=[d for d in (row["birth_date"] or "").split(";") if d],
+            countries=[c.lower() for c in (row["countries"] or "").split(";") if c],
+            syllabic=any(ord(char) in script for char in name for script in _SYLLABIC_SCRIPTS),
         )
 
     def _meaningful(self, tokens: list[str]) -> list[str]:
         if not self._organisations:
             return tokens
         return [token for token in tokens if token.casefold() not in LEGAL_WORDS]
+
+
+def _name_tokens(spelling: str) -> list[str]:
+    tokens = [
+        token
+        for token in spelling.split()
+        if token.casefold().rstrip(".") not in TITLES and not _INITIALS.match(token)
+    ]
+    return [cleaned for token in tokens if (cleaned := _PUNCTUATION.sub("", token))]
+
+
+def _without_a_middle_name(
+    rng: random.Random, listed: _Listed, tokens: list[str]
+) -> list[str] | None:
+    if listed.syllabic or len(tokens) < 3:
+        return None
+    patronymics = [index for index, token in enumerate(tokens) if _PATRONYMIC.search(token)]
+    dropped = patronymics[0] if patronymics else rng.randrange(1, len(tokens) - 1)
+    return tokens[:dropped] + tokens[dropped + 1 :]
 
 
 def _variant(
@@ -226,7 +295,7 @@ def _variant(
     variations: dict[str, Callable[[list[str]], list[str] | None]] = {
         "other_spelling": lambda t: _other_spelling(rng, listed, t),
         "swapped_order": lambda t: t[::-1],
-        "missing_middle_name": lambda t: [t[0], t[-1]] if len(t) >= 3 else None,
+        "missing_middle_name": lambda t: _without_a_middle_name(rng, listed, t),
         "typo": lambda t: _typo(rng, t),
     }
     chosen = rng.sample(list(variations), rng.choice([1, 1, 2]))
@@ -235,10 +304,12 @@ def _variant(
         changed = variations[variation](tokens)
         if changed and changed != tokens:
             tokens, applied = changed, [*applied, variation]
-    if not applied:
-        tokens, applied = _typo(rng, tokens) or tokens, ["typo"]
+    if not applied and (typo := _typo(rng, tokens)) and typo != tokens:
+        tokens, applied = typo, ["typo"]
+    # No variation fits some short names, which then appear exactly as listed.
     name = " ".join(tokens)
-    assert name_forms(name).normalised, listed.name
+    if not name_forms(name).normalised:
+        raise ValueError(f"no searchable name left of {listed.name!r}")
     return name, applied
 
 
@@ -270,23 +341,28 @@ def _identity(
     rng: random.Random, listed: _Listed, person: dict[str, object], label: str
 ) -> tuple[date, str]:
     generated_birth = person["birth_date"]
-    assert isinstance(generated_birth, date)
-    listed_birth = _birth_date(rng, listed.birth_date)
+    if not isinstance(generated_birth, date):
+        raise TypeError(f"{person['person_id']} has no birth date")
     if label == "true_match":
-        return listed_birth or generated_birth, listed.country or str(person["nationality"])
-    # A namesake is someone else: born years apart from the listed person.
-    if listed_birth and abs((listed_birth - generated_birth).days) < 3 * 365:
-        generated_birth = listed_birth - timedelta(
-            days=rng.choice([-1, 1]) * rng.randint(4, 15) * 365
-        )
+        listed_birth = _birth_date(rng, listed.birth_dates[0])
+        if listed_birth is None or listed.nationality is None:
+            raise ValueError(f"{listed.entity_id} can't be a true match")
+        return listed_birth, listed.nationality
+    # A namesake is someone else: born years apart from every listed birth date. Moving the
+    # birth earlier keeps an adult an adult.
+    listed_years = [int(year.group(1)) for d in listed.birth_dates if (year := _YEAR.match(d))]
+    while any(abs(generated_birth.year - year) < NAMESAKE_YEARS_APART for year in listed_years):
+        generated_birth -= timedelta(days=rng.randint(NAMESAKE_YEARS_APART, 15) * 365)
     return generated_birth, str(person["nationality"])
 
 
-def _birth_date(rng: random.Random, listed: str | None) -> date | None:
-    if not listed:
-        return None
+def _birth_date(rng: random.Random, listed: str) -> date | None:
     if _FULL_DATE.match(listed):
         return date.fromisoformat(listed)
+    if month := _YEAR_MONTH.match(listed):
+        year_number, month_number = int(month.group(1)), int(month.group(2))
+        days = calendar.monthrange(year_number, month_number)[1]
+        return date(year_number, month_number, rng.randint(1, days))
     if year := _YEAR.match(listed):
         return date(int(year.group(1)), 1, 1) + timedelta(days=rng.randint(0, 364))
     return None

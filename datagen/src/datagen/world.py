@@ -73,6 +73,7 @@ def build_world(config: WorldConfig, raw_dir: Path, worlds_dir: Path) -> Path:
         customers.customers.filter(pl.col("customer_type") == "company"),
         laundering_people(customers, companies),
         listed,
+        first_booking.date(),
         config.seed,
     )
     persons = (
