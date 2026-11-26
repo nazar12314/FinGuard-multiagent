@@ -8,6 +8,8 @@ repos:
         args: [--allow-multiple-documents]
       - id: check-toml
       - id: check-added-large-files
+        # The adverse-media corpus is generated once and committed on purpose.
+        exclude: ^datagen/src/datagen/corpus/
       - id: detect-private-key
 
   - repo: local
