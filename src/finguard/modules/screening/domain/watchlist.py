@@ -10,7 +10,7 @@ SCREENED_SCHEMAS = frozenset({"Person", "Organization", "Company", "LegalEntity"
 
 _NOT_ALPHANUMERIC = re.compile(r"[^0-9a-z]+")
 # Marks that sit inside a word: apostrophes (O'Brien), the soft and hard signs of Cyrillic
-# romanisations (Ignat'yev, Ignat"ev) and BGN's separating dot (Mostsov written Mosts·ov).
+# romanisations (Ignat'yev, Ignat"ev) and BGN's separating dot (Мостсов written Most·sov).
 _INSIDE_A_WORD = re.compile("['\"`\u00b4\u00b7\u02b9\u02ba\u02bb\u02bc\u02be\u02bf\u2018\u2019]")
 
 

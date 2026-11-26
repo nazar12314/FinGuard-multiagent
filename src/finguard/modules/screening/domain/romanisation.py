@@ -28,7 +28,10 @@ def romanize_ukrainian(text: str) -> str:
         else:
             letters = UKRAINIAN.get(lower, char)
         if char != lower and letters:
-            letters = letters[0].upper() + letters[1:]
+            # A capital in an all-caps word (ШЕВЧЕНКО) stays all caps: SHEVCHENKO, not ShEVChENKO.
+            neighbours = text[index - 1 : index] + text[index + 1 : index + 2]
+            all_caps = any(neighbour.isupper() for neighbour in neighbours)
+            letters = letters.upper() if all_caps else letters[0].upper() + letters[1:]
         latin.append(letters)
         at_word_start = not char.isalpha()
     return "".join(latin)

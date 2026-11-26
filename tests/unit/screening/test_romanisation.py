@@ -15,6 +15,8 @@ from finguard.modules.screening.domain.romanisation import romanize_ukrainian
         ("Лукʼян", "Lukian"),
         ("Ольга-Марія", "Olha-Mariia"),
         ("Ґанна", "Ganna"),
+        ("ШЕВЧЕНКО ЮЛІЯ", "SHEVCHENKO YULIIA"),
+        ("Ю", "Yu"),
     ],
 )
 def test_follows_the_official_romanisation(cyrillic: str, latin: str) -> None:
